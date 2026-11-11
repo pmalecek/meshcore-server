@@ -142,6 +142,11 @@ Token se posílá v hlavičce `Authorization: Bearer <token>`. Interaktivní dok
 | POST | `/api/v1/contacts/{key}/login` | Přihlášení k room serveru nebo repeateru (`write`) |
 | POST | `/api/v1/contacts/{key}/logout` | Odhlášení (`write`) |
 | GET | `/api/v1/contacts/{key}/login` | Stav přihlášení |
+| POST | `/api/v1/contacts/{key}/status` | Stav repeateru/room serveru (`write`) |
+| POST | `/api/v1/contacts/{key}/telemetry` | Telemetrie uzlu (`write`) |
+| POST | `/api/v1/contacts/{key}/neighbours` | Sousedé uzlu (`write`) |
+| POST | `/api/v1/contacts/{key}/acl` | Oprávnění (ACL) uzlu (`admin`) |
+| POST | `/api/v1/contacts/{key}/cli` | CLI příkaz na uzlu, vrátí jeho odpověď (`admin`) |
 | GET / PATCH | `/api/v1/settings/contacts` | Ruční přidávání kontaktů, obsazenost companionu (`admin` pro změnu) |
 | GET | `/api/v1/commands/{id}` | Stav příkazu ve frontě |
 | WS | `/api/v1/ws` | Živé události |
@@ -199,6 +204,20 @@ GET  /api/v1/messages?kind=room&peer=a1b2c3d4e5f6
 ```
 
 Přihlášení čeká na odpověď uzlu (podle vzdálenosti sekundy až desítky sekund); server mezitím normálně odesílá a přijímá. Výsledek ohlásí i událost `contact.login`; v seznamu kontaktů mají room servery a repeatery pole `login` (přihlášen, admin, automatické přihlášení). Heslo se ukládá jen s `remember: true`, a to do databáze serveru v čitelné podobě – chraňte proto databázi i zálohy. Do API ani exportu se heslo nikdy nedostane. `logout` ho ve výchozím stavu smaže (`?forget=false` ho ponechá).
+
+### Správa repeaterů a room serverů
+
+Po přihlášení k uzlu (`POST /api/v1/contacts/{key}/login`, pro ACL a CLI jako admin) jde uzel spravovat přes rádio:
+
+| Endpoint | Vrací |
+| --- | --- |
+| `…/status` | baterie (mV), délka fronty, šum, poslední RSSI a SNR, počty přijatých/odeslaných paketů (flood/direct, duplicity), airtime, uptime |
+| `…/telemetry` | telemetrie v Cayenne LPP, např. `[{"channel": 1, "type": "voltage", "value": 4.12}]` |
+| `…/neighbours` | sousedé, které uzel slyší přímo: prefix klíče, jméno z kontaktů, SNR, před kolika sekundami |
+| `…/acl` | kdo má na uzlu jaká oprávnění, se jmény z kontaktů |
+| `…/cli` | `{"command": "get radio"}` → `{"reply": "> 869.525,250.0,11,5"}` |
+
+Každá odpověď obsahuje i `elapsed` – jak dlouho trvala cesta tam a zpět. Požadavek čeká na odpověď podle vzdálenosti uzlu (nejméně 8 s, nejvýš 90 s); server mezitím normálně odesílá a přijímá zprávy. Na jeden uzel jde vždy jen jeden požadavek najednou. Když uzel neodpoví, API vrátí `409` s důvodem (a připomene přihlášení). Odpovědi CLI se neukládají mezi zprávy.
 
 ### Nastavení nodu
 

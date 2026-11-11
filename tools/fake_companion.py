@@ -171,6 +171,16 @@ class FakeCompanion:
             if getattr(self, "_room_queue", None):
                 return [self._room_queue.pop(0)]
             return [queue.pop(0)] if queue else [bytes([10])]
+        if cmd == 0x02 and data[1] == 1:   # CLI příkaz na repeater/room (txt_type CLI_DATA)
+            prefix, command = data[7:13], data[13:].decode(errors="replace")
+            print(f"CLI na {prefix.hex()}: {command!r}")
+            reply = {"ver": "v1.18.0 (fake)", "get radio": "> 869.525,250.0,11,5"}.get(command, f"? {command}")
+            # odpověď jako CONTACT_MSG_RECV_V3 s txt_type 1
+            msg = (bytes([16, 40, 0, 0]) + prefix + bytes([0, 1]) + int(time.time()).to_bytes(4, "little")
+                   + reply.encode())
+            self._room_queue = getattr(self, "_room_queue", []) + [msg]
+            asyncio.get_running_loop().call_later(0.6, self._push, bytes([0x83]))
+            return [bytes([6, 1]) + os.urandom(4) + (3000).to_bytes(4, "little")]
         if cmd == 0x02:   # SEND_TXT_MSG: 0x02 0x00 pokus čas(4) prefix(6) text
             attempt = data[2]
             text = data[13:].decode(errors="replace")
@@ -205,6 +215,26 @@ class FakeCompanion:
                 else:
                     loop.call_later(1.0, self._push, bytes([0x86, 0]) + key[:6])
             return [bytes([6, 1]) + os.urandom(4) + (3000).to_bytes(4, "little")]
+        if cmd == 0x32:   # BINARY_REQ: klíč(32) typ data
+            key, rtype = data[1:33], data[33]
+            tag = os.urandom(4)
+            payload = None
+            if rtype == 1:    # STATUS: 52 B polí (baterie, fronta, šum, RSSI, pakety, airtime, uptime…)
+                payload = struct.pack("<HHhhIIIIIIIIHhHHI", 4120, 0, -112, -85, 1500, 900, 3600, 86400,
+                                      400, 500, 700, 800, 0, 40, 3, 7, 1800)
+            elif rtype == 3:  # TELEMETRY: Cayenne LPP – kanál 1 napětí 4.12 V, kanál 2 teplota 21.5 °C
+                payload = bytes([1, 116]) + (412).to_bytes(2, "big") + bytes([2, 103]) + (215).to_bytes(2, "big")
+            elif rtype == 6:  # NEIGHBOURS: celkem, vráceno, [klíč(4) stáří(4) snr(1)]
+                payload = (2).to_bytes(2, "little") + (2).to_bytes(2, "little")
+                payload += bytes.fromhex("22222222") + (120).to_bytes(4, "little") + bytes([40])
+                payload += bytes.fromhex("77777777") + (3600).to_bytes(4, "little") + bytes([(-20) & 0xFF])
+            elif rtype == 5:  # ACL: [klíč(6) oprávnění(1)]
+                payload = CONTACTS[0][0][:6] + bytes([3]) + PUBKEY[:6] + bytes([1])
+            if key in (ROOM_KEY, CONTACTS[1][0]) and payload is not None:
+                asyncio.get_running_loop().call_later(
+                    0.8, self._push, bytes([0x8C, 0]) + tag + payload)
+            print(f"binární požadavek {rtype} na {key.hex()[:12]}")
+            return [bytes([6, 1]) + tag + (3000).to_bytes(4, "little")]
         if cmd == 0x1D:   # LOGOUT
             print("odhlášení")
             return [bytes([0])]

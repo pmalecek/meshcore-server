@@ -11,7 +11,7 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING, Any, Optional
 
-from meshcore import EventType
+from meshcore import BinaryReqType, EventType
 
 from .. import serialize
 from ..db.repo import Repository
@@ -30,6 +30,8 @@ LOGIN_MIN_TIMEOUT = 8.0     # s
 LOGIN_MAX_TIMEOUT = 60.0    # s
 RELOGIN_DELAY = 3.0         # s mezi automatickými přihlášeními po reconnectu
 LOGIN_TYPES = (2, 3)        # repeater, room server
+REMOTE_MIN_TIMEOUT = 8.0    # s, odpověď vzdáleného uzlu
+REMOTE_MAX_TIMEOUT = 90.0   # s
 
 
 class ActionError(Exception):
@@ -421,3 +423,144 @@ class DeviceActions:
                 logger.warning("Automatické přihlášení k %s selhalo: %s", entry["contact_key"][:12], exc)
             except Exception:  # noqa: BLE001
                 logger.exception("Automatické přihlášení selhalo")
+
+    # ----------------------------------------------- správa vzdálených uzlů
+
+    def _node_lock(self, key: str) -> asyncio.Lock:
+        """Na jeden uzel posíláme vždy jen jeden požadavek (odpovědi CLI nemají značku)."""
+        locks = self.__dict__.setdefault("_node_locks", {})
+        return locks.setdefault(key, asyncio.Lock())
+
+    async def _remote(self, key: str, what: str, send, wait_types, match_fn) -> tuple[Any, float]:
+        """Odešle požadavek na uzel (pod zámkem spojení) a počká na odpověď (mimo něj).
+
+        send(mc) vrací MSG_SENT; match_fn(event, sent) rozhodne, zda je událost odpovědí.
+        Vrátí (událost, doba v sekundách).
+        """
+        row = await self.repo.get_contact(key)
+        if row is None:
+            raise ActionError("kontakt v databázi neexistuje")
+        if row.get("type") not in LOGIN_TYPES:
+            raise ActionError("správa jde jen u repeateru nebo room serveru")
+        await self.ensure_on_device(key)
+
+        async with self._node_lock(key):
+            started = asyncio.get_running_loop().time()
+
+            async def do(mc):
+                res = await send(mc)
+                _check(res, what)
+                return res
+
+            sent = await self.manager.call(do)
+            timeout = (sent.payload or {}).get("suggested_timeout", 0) / 800
+            timeout = min(max(timeout, REMOTE_MIN_TIMEOUT), REMOTE_MAX_TIMEOUT)
+            event = await self.manager.wait_for(wait_types, lambda e: match_fn(e, sent), timeout)
+            elapsed = round(asyncio.get_running_loop().time() - started, 2)
+        if event is None:
+            login = await self.repo.get_login(key) or {}
+            hint = "" if login.get("logged_in") else " – nejste přihlášen, zkuste nejdřív login"
+            raise ActionError(f"{what}: uzel {row.get('name') or key[:12]} neodpověděl do {timeout:.0f} s{hint}")
+        return event, elapsed
+
+    @staticmethod
+    def _tag_match(event, sent) -> bool:
+        tag = sent.payload.get("expected_ack")
+        tag = tag.hex() if isinstance(tag, (bytes, bytearray)) else tag
+        return (event.attributes or {}).get("tag") == tag
+
+    async def node_status(self, key: str, token_id: Optional[int] = None) -> dict:
+        async def go():
+            event, elapsed = await self._remote(
+                key, "dotaz na stav",
+                lambda mc: mc.commands.send_binary_req(key, BinaryReqType.STATUS),
+                (EventType.STATUS_RESPONSE,), self._tag_match,
+            )
+            data = {k: v for k, v in (event.payload or {}).items() if k != "tag"}
+            return {"public_key": key, "elapsed": elapsed, "status": data}
+
+        return await self._run("node_status", {"public_key": key}, token_id, go())
+
+    async def node_telemetry(self, key: str, token_id: Optional[int] = None) -> dict:
+        async def go():
+            event, elapsed = await self._remote(
+                key, "dotaz na telemetrii",
+                lambda mc: mc.commands.send_binary_req(key, BinaryReqType.TELEMETRY),
+                (EventType.TELEMETRY_RESPONSE,), self._tag_match,
+            )
+            return {"public_key": key, "elapsed": elapsed, "telemetry": _lpp_to_json((event.payload or {}).get("lpp"))}
+
+        return await self._run("node_telemetry", {"public_key": key}, token_id, go())
+
+    async def node_neighbours(self, key: str, token_id: Optional[int] = None) -> dict:
+        async def go():
+            event, elapsed = await self._remote(
+                key, "dotaz na sousedy",
+                lambda mc: mc.commands.req_neighbours_async(key, count=255, pubkey_prefix_length=4),
+                (EventType.NEIGHBOURS_RESPONSE,), self._tag_match,
+            )
+            p = event.payload or {}
+            neighbours = []
+            for n in p.get("neighbours", []):
+                contact = await self.repo.find_contact_by_prefix(n["pubkey"])
+                neighbours.append({**n, "name": (contact or {}).get("name"),
+                                   "public_key": (contact or {}).get("public_key")})
+            return {
+                "public_key": key, "elapsed": elapsed,
+                "total": p.get("neighbours_count"), "returned": p.get("results_count"),
+                "neighbours": neighbours,
+            }
+
+        return await self._run("node_neighbours", {"public_key": key}, token_id, go())
+
+    async def node_acl(self, key: str, token_id: Optional[int] = None) -> dict:
+        async def go():
+            event, elapsed = await self._remote(
+                key, "dotaz na ACL",
+                lambda mc: mc.commands.send_binary_req(key, BinaryReqType.ACL, data=b"\0\0"),
+                (EventType.ACL_RESPONSE,), self._tag_match,
+            )
+            entries = []
+            for entry in (event.payload or {}).get("acl_data") or []:
+                entry = dict(entry) if isinstance(entry, dict) else {"raw": str(entry)}
+                key_prefix = entry.get("key")
+                if key_prefix:
+                    contact = await self.repo.find_contact_by_prefix(key_prefix)
+                    entry["name"] = (contact or {}).get("name")
+                entries.append(entry)
+            return {"public_key": key, "elapsed": elapsed, "acl": entries}
+
+        return await self._run("node_acl", {"public_key": key}, token_id, go())
+
+    async def node_cli(self, key: str, command: str, token_id: Optional[int] = None) -> dict:
+        async def go():
+            row = await self.repo.get_contact(key) or {}
+            prefix = key[:12]
+            event, elapsed = await self._remote(
+                key, "CLI příkaz",
+                lambda mc: mc.commands.send_cmd(key, command, dst_type=row.get("type")),
+                (EventType.CONTACT_MSG_RECV,),
+                lambda e, sent: (e.payload or {}).get("txt_type") == 1
+                and (e.payload or {}).get("pubkey_prefix") == prefix,
+            )
+            return {"public_key": key, "command": command, "elapsed": elapsed,
+                    "reply": (event.payload or {}).get("text", "")}
+
+        return await self._run("node_cli", {"public_key": key, "command": command}, token_id, go())
+
+
+def _lpp_to_json(lpp) -> Any:
+    """Telemetrie (Cayenne LPP) do JSON pomocí kodéru z knihovny meshcore."""
+    import json
+
+    if lpp is None:
+        return None
+    try:
+        from meshcore.lpp_json_encoder import lpp_json_encoder  # type: ignore[attr-defined]
+
+        return json.loads(json.dumps(lpp, default=lpp_json_encoder))
+    except Exception:  # noqa: BLE001
+        try:
+            return json.loads(json.dumps(lpp, default=lambda o: getattr(o, "__dict__", str(o))))
+        except Exception:  # noqa: BLE001
+            return str(lpp)

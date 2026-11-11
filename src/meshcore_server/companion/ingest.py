@@ -189,6 +189,8 @@ class Ingest:
         if t == EventType.CHANNEL_MSG_RECV:
             await self._channel_message(p)
         elif t == EventType.CONTACT_MSG_RECV:
+            if p.get("txt_type") == 1:
+                return  # odpověď na CLI příkaz – nepatří do zpráv, vrací ji API /cli
             await self._direct_message(p)
         elif t == EventType.CONTACTS:
             # úvodní i průběžné (lastmod) načtení kontaktů

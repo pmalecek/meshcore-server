@@ -723,3 +723,50 @@ async def logout(
 ):
     row = await _contact_or_404(ctx, key)
     return await _action(ctx.actions.logout(row["public_key"], forget, principal.token_id))
+
+
+# --------------------------------------------- správa repeaterů a room serverů
+# Požadavky jdou rádiem na vzdálený uzel a čekají na jeho odpověď (sekundy až desítky
+# sekund). Většina vyžaduje přihlášení k uzlu (POST /contacts/{key}/login), ACL a CLI admina.
+
+
+@router.post("/contacts/{key}/status")
+async def node_status(key: str, ctx: ServerContext = Depends(get_ctx), principal: Principal = Depends(require("write"))):
+    """Stav uzlu: baterie, fronta, šum, RSSI, počty paketů, uptime, airtime…"""
+    row = await _contact_or_404(ctx, key)
+    return await _action(ctx.actions.node_status(row["public_key"], principal.token_id))
+
+
+@router.post("/contacts/{key}/telemetry")
+async def node_telemetry(key: str, ctx: ServerContext = Depends(get_ctx), principal: Principal = Depends(require("write"))):
+    """Telemetrie uzlu (Cayenne LPP: napětí, teplota, poloha…)."""
+    row = await _contact_or_404(ctx, key)
+    return await _action(ctx.actions.node_telemetry(row["public_key"], principal.token_id))
+
+
+@router.post("/contacts/{key}/neighbours")
+async def node_neighbours(key: str, ctx: ServerContext = Depends(get_ctx), principal: Principal = Depends(require("write"))):
+    """Sousedé, které uzel slyší přímo (s SNR a stářím), se jmény z kontaktů."""
+    row = await _contact_or_404(ctx, key)
+    return await _action(ctx.actions.node_neighbours(row["public_key"], principal.token_id))
+
+
+@router.post("/contacts/{key}/acl")
+async def node_acl(key: str, ctx: ServerContext = Depends(get_ctx), principal: Principal = Depends(require("admin"))):
+    """Seznam oprávnění (ACL) uzlu – vyžaduje admin přihlášení k uzlu."""
+    row = await _contact_or_404(ctx, key)
+    return await _action(ctx.actions.node_acl(row["public_key"], principal.token_id))
+
+
+class CliRequest(BaseModel):
+    command: str = Field(min_length=1, max_length=150, description="např. „get radio“, „ver“, „neighbors“")
+
+
+@router.post("/contacts/{key}/cli")
+async def node_cli(
+    key: str, body: CliRequest,
+    ctx: ServerContext = Depends(get_ctx), principal: Principal = Depends(require("admin")),
+):
+    """CLI příkaz na uzlu; vrátí jeho textovou odpověď. Vyžaduje admin přihlášení k uzlu."""
+    row = await _contact_or_404(ctx, key)
+    return await _action(ctx.actions.node_cli(row["public_key"], body.command.strip(), principal.token_id))

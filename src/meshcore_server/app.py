@@ -87,6 +87,7 @@ class Application:
         ingest = Ingest(repo, self.cfg.companion, bus, hops)
         ingest.attach(self.companion)
         actions = DeviceActions(repo, self.companion, bus, hops)
+        self.companion.add_state_listener(actions.on_state)
         queue = CommandQueue(repo, self.companion, self.cfg.companion, bus, hops, actions)
 
         if not await repo.list_tokens():

@@ -139,6 +139,9 @@ Token se posílá v hlavičce `Authorization: Bearer <token>`. Interaktivní dok
 | GET | `/api/v1/unread` | Nepřečtené zprávy podle konverzací; `reader` = uživatel klienta |
 | POST | `/api/v1/read` | Označení konverzace jako přečtené po danou zprávu |
 | GET | `/api/v1/server` | Podrobný stav: databáze, vytížení, companion, klienti (`admin`) |
+| POST | `/api/v1/contacts/{key}/login` | Přihlášení k room serveru nebo repeateru (`write`) |
+| POST | `/api/v1/contacts/{key}/logout` | Odhlášení (`write`) |
+| GET | `/api/v1/contacts/{key}/login` | Stav přihlášení |
 | GET / PATCH | `/api/v1/settings/contacts` | Ruční přidávání kontaktů, obsazenost companionu (`admin` pro změnu) |
 | GET | `/api/v1/commands/{id}` | Stav příkazu ve frontě |
 | WS | `/api/v1/ws` | Živé události |
@@ -182,6 +185,21 @@ Kanál: `PUT /api/v1/channels/2` s `{"name": "#plzen", "region": "#cz"}` vytvoř
 
 Akce správy se provádějí hned; když companion není připojený, API vrátí `503`, když ji companion odmítne, `409`.
 
+### Room servery
+
+Room server je samostatný typ konverzace (`kind: "room"`, v nepřečtených `room:<prefix>`). Příspěvky ostatních přicházejí pod klíčem roomu; skutečného autora server uloží do `author_prefix` (prefix jeho klíče) a jméno autora doplní do `sender_name` z kontaktů (neznámý autor = jeho prefix).
+
+```bash
+# přihlášení (prázdné heslo = host); remember=true uloží heslo a po reconnectu se server přihlásí sám
+POST /api/v1/contacts/a1b2c3d4e5f6/login   {"password": "heslo", "remember": true}
+# příspěvek do roomu
+POST /api/v1/messages                       {"kind": "room", "to": "a1b2c3d4e5f6", "text": "Ahoj"}
+# historie roomu
+GET  /api/v1/messages?kind=room&peer=a1b2c3d4e5f6
+```
+
+Přihlášení čeká na odpověď uzlu (podle vzdálenosti sekundy až desítky sekund); server mezitím normálně odesílá a přijímá. Výsledek ohlásí i událost `contact.login`; v seznamu kontaktů mají room servery a repeatery pole `login` (přihlášen, admin, automatické přihlášení). Heslo se ukládá jen s `remember: true`, a to do databáze serveru v čitelné podobě – chraňte proto databázi i zálohy. Do API ani exportu se heslo nikdy nedostane. `logout` ho ve výchozím stavu smaže (`?forget=false` ho ponechá).
+
 ### Nastavení nodu
 
 ```json
@@ -222,7 +240,7 @@ Připojení `ws://<server>:8080/api/v1/ws?token=<token>` (z prohlížeče místo
 {"seq": 123, "type": "message.received", "ts": "2026-11-11T09:03:19Z", "data": {…}}
 ```
 
-Typy událostí: `message.received` (příchozí), `message.created` (odchozí zařazená do fronty), `message.status` (změna stavu odchozí), `command.finished`, `contact.updated`, `contact.deleted`, `contacts.synced`, `read.updated`, `channels.updated`, `advert.received`, `device.updated`, `device.connection`.
+Typy událostí: `message.received` (příchozí), `message.created` (odchozí zařazená do fronty), `message.status` (změna stavu odchozí), `command.finished`, `contact.updated`, `contact.deleted`, `contacts.synced`, `contact.login`, `read.updated`, `channels.updated`, `advert.received`, `device.updated`, `device.connection`.
 
 Po výpadku spojení se klient připojí s `&since=<poslední seq>` a server mu nejdřív pošle zmeškané události. Pokud už je nemá (drží je `database.events_retention_days`, výchozí 7 dní), pošle `{"type": "resync.required"}` a klient si data načte znovu přes REST. Neplatný token ukončí spojení kódem 4401. Klient může posílat `{"type": "ping"}`, server odpoví `{"type": "pong"}`.
 

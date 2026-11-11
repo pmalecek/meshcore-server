@@ -7,6 +7,7 @@ Když companion není připojený, akce vyhodí CompanionUnavailable (API → 50
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -14,6 +15,7 @@ from meshcore import EventType
 
 from .. import serialize
 from ..db.repo import Repository
+from ..db.types import utcnow
 from .manager import CompanionUnavailable, is_timeout
 
 if TYPE_CHECKING:
@@ -22,6 +24,12 @@ if TYPE_CHECKING:
     from .manager import CompanionManager
 
 logger = logging.getLogger("meshcore_server.actions")
+
+
+LOGIN_MIN_TIMEOUT = 8.0     # s
+LOGIN_MAX_TIMEOUT = 60.0    # s
+RELOGIN_DELAY = 3.0         # s mezi automatickými přihlášeními po reconnectu
+LOGIN_TYPES = (2, 3)        # repeater, room server
 
 
 class ActionError(Exception):
@@ -311,3 +319,105 @@ class DeviceActions:
             logger.warning("Companion se restartuje na žádost API")
 
         await self._run("reboot", {}, token_id, go())
+
+    # ------------------------------------------- přihlášení k room serveru / repeateru
+
+    async def login(self, key: str, password: str, remember: bool = False, token_id: Optional[int] = None) -> dict:
+        payload = {"public_key": key, "remember": remember}  # heslo do historie příkazů nepatří
+        return await self._run("login", payload, token_id, self._login(key, password, remember))
+
+    async def _login(self, key: str, password: str, remember: bool) -> dict:
+        row = await self.repo.get_contact(key)
+        if row is None:
+            raise ActionError("kontakt v databázi neexistuje")
+        if row.get("type") not in LOGIN_TYPES:
+            raise ActionError("přihlásit se jde jen k room serveru nebo repeateru")
+        # Companion potřebuje kontakt u sebe (kvůli šifrování).
+        await self.ensure_on_device(key)
+
+        async def send(mc):
+            res = await mc.commands._send_login_raw(key, password)
+            _check(res, "odeslání přihlášení")
+            return res
+
+        sent = await self.manager.call(send)
+        timeout = (sent.payload or {}).get("suggested_timeout", 0) / 800
+        timeout = min(max(timeout, LOGIN_MIN_TIMEOUT), LOGIN_MAX_TIMEOUT)
+        prefix = key[:12]
+
+        # Na odpověď čekáme mimo zámek – mezitím může server dál odesílat a přijímat.
+        event = await self.manager.wait_for(
+            (EventType.LOGIN_SUCCESS, EventType.LOGIN_FAILED),
+            lambda e: (e.payload or {}).get("pubkey_prefix", prefix) == prefix,
+            timeout,
+        )
+        name = row.get("name") or prefix
+        if event is None or event.type == EventType.LOGIN_FAILED:
+            error = "uzel neodpověděl" if event is None else "nesprávné heslo"
+            await self.repo.save_login(key, logged_in=False, last_error=error)
+            await self._publish_login(key)
+            logger.warning("Přihlášení k %s selhalo: %s", name, error)
+            raise ActionError(f"přihlášení selhalo: {error}")
+
+        info = event.payload or {}
+        values = {
+            "logged_in": True,
+            "is_admin": bool(info.get("is_admin")),
+            "permissions": info.get("permissions"),
+            "last_login_at": utcnow(),
+            "last_error": None,
+        }
+        if remember:
+            values.update(password=password, auto_login=True)
+        await self.repo.save_login(key, **values)
+        logger.info("Přihlášeno k %s%s", name, " (admin)" if values["is_admin"] else "")
+        return await self._publish_login(key)
+
+    async def logout(self, key: str, forget: bool = True, token_id: Optional[int] = None) -> dict:
+        async def go():
+            async def do(mc):
+                await mc.commands.send_logout(key)  # i když selže, lokálně se odhlásíme
+
+            try:
+                await self.manager.call(do)
+            except CompanionUnavailable:
+                pass
+            values = {"logged_in": False, "last_error": None}
+            if forget:
+                values.update(password=None, auto_login=False)
+            await self.repo.save_login(key, **values)
+            return await self._publish_login(key)
+
+        return await self._run("logout", {"public_key": key, "forget": forget}, token_id, go())
+
+    async def login_state(self, key: str) -> dict:
+        row = await self.repo.get_login(key)
+        return serialize.login(key, row)
+
+    async def _publish_login(self, key: str) -> dict:
+        state = await self.login_state(key)
+        await self._publish("contact.login", state)
+        return state
+
+    async def on_state(self, status) -> None:
+        """Po výpadku se přihlášení ruší; po připojení se obnoví ta zapamatovaná."""
+        from .manager import ConnectionState
+
+        if status.state == ConnectionState.DISCONNECTED:
+            await self.repo.mark_all_logged_out()
+        elif status.state == ConnectionState.CONNECTED:
+            asyncio.create_task(self._relogin_all())
+
+    async def _relogin_all(self) -> None:
+        for entry in await self.repo.list_logins():
+            if not entry.get("auto_login") or entry.get("password") is None:
+                continue
+            if not self.manager.connected.is_set():
+                return
+            await asyncio.sleep(RELOGIN_DELAY)
+            try:
+                await self._login(entry["contact_key"], entry["password"], remember=True)
+            except (ActionError, CompanionUnavailable) as exc:
+                logger.warning("Automatické přihlášení k %s selhalo: %s", entry["contact_key"][:12], exc)
+            except Exception:  # noqa: BLE001
+                logger.exception("Automatické přihlášení selhalo")

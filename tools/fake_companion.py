@@ -31,7 +31,10 @@ CHANNELS = {0: "Public", 1: "test"}
 CONTACTS = [
     (bytes.fromhex("11" * 32), 1, "Alice"),
     (bytes.fromhex("22" * 32), 2, "Repeater-Plzen"),
+    (bytes.fromhex("55" * 32), 3, "Room-Plzen"),
 ]
+ROOM_KEY = bytes.fromhex("55" * 32)
+ROOM_PASSWORD = "heslo"   # admin; prázdné heslo = host
 MAX_CONTACTS = 50  # firmware posílá max_contacts / 2 (viz device_info)
 MAX_CHANNELS = 8
 
@@ -103,6 +106,14 @@ def dm_msg(pubkey: bytes, text: str) -> bytes:
     )
 
 
+def room_post(author: bytes, text: str) -> bytes:
+    # CONTACT_MSG_RECV_V3 s txt_type 2: od room serveru, autor v „signature“ (4 B)
+    return (
+        bytes([16, 40, 0, 0]) + ROOM_KEY[:6] + bytes([2, 2])
+        + int(time.time()).to_bytes(4, "little") + author[:4] + text.encode()
+    )
+
+
 def channel_msg(text: str) -> bytes:
     return bytes([8, 0, 2, 0]) + int(time.time()).to_bytes(4, "little") + text.encode()
 
@@ -157,6 +168,8 @@ class FakeCompanion:
             idx = data[1]
             return [channel_info(idx)] if idx < MAX_CHANNELS else [bytes([1, 2])]
         if cmd == 0x0A:   # SYNC_NEXT_MESSAGE
+            if getattr(self, "_room_queue", None):
+                return [self._room_queue.pop(0)]
             return [queue.pop(0)] if queue else [bytes([10])]
         if cmd == 0x02:   # SEND_TXT_MSG: 0x02 0x00 pokus čas(4) prefix(6) text
             attempt = data[2]
@@ -175,6 +188,25 @@ class FakeCompanion:
             for delay, path in ((0.5, bytes.fromhex("aaaa2222")), (1.2, bytes.fromhex("bbbbcccc")),
                                 (1.5, bytes.fromhex("aaaa2222"))):
                 loop.call_later(delay, self._push, heard_repeat(idx, ts, full, path))
+            return [bytes([0])]
+        if cmd == 0x1A:   # SEND_LOGIN: klíč(32) heslo
+            key, pwd = data[1:33], data[33:].decode(errors="replace")
+            print(f"přihlášení k {key.hex()[:12]} heslem {pwd!r}")
+            if key == ROOM_KEY:
+                loop = asyncio.get_running_loop()
+                if pwd in (ROOM_PASSWORD, ""):
+                    perms = 1 if pwd == ROOM_PASSWORD else 0
+                    ok = bytes([0x85, perms]) + key[:6] + int(time.time()).to_bytes(4, "little") + bytes([perms, 1])
+                    loop.call_later(1.0, self._push, ok)
+                    # po přihlášení room pošle příspěvky ostatních
+                    self._room_queue = [room_post(CONTACTS[0][0], "Ahoj všem v roomu"),
+                                        room_post(bytes.fromhex("99" * 4), "Zpráva od neznámého autora")]
+                    loop.call_later(1.5, self._push, bytes([0x83]))
+                else:
+                    loop.call_later(1.0, self._push, bytes([0x86, 0]) + key[:6])
+            return [bytes([6, 1]) + os.urandom(4) + (3000).to_bytes(4, "little")]
+        if cmd == 0x1D:   # LOGOUT
+            print("odhlášení")
             return [bytes([0])]
         if cmd == 54:     # SET_FLOOD_SCOPE
             key = data[2:18]

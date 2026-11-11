@@ -74,7 +74,14 @@ async def list_contacts(
     _: Principal = Depends(require("read")),
 ):
     rows = await ctx.repo.list_contacts(type_=type, on_device=on_device, q=q)
-    return {"items": [serialize.contact(r) for r in rows]}
+    logins = {l["contact_key"]: l for l in await ctx.repo.list_logins()}
+    items = []
+    for r in rows:
+        item = serialize.contact(r)
+        if r.get("type") in (2, 3):
+            item["login"] = serialize.login(r["public_key"], logins.get(r["public_key"]))
+        items.append(item)
+    return {"items": items}
 
 
 @router.get("/contacts/{key}")
@@ -93,8 +100,8 @@ async def list_channels(ctx: ServerContext = Depends(get_ctx), _: Principal = De
 
 @router.get("/messages")
 async def list_messages(
-    kind: Optional[Literal["dm", "channel"]] = None,
-    peer: Optional[str] = Query(None, description="DM: prefix klíče kontaktu, kanál: číslo kanálu"),
+    kind: Optional[Literal["dm", "channel", "room"]] = None,
+    peer: Optional[str] = Query(None, description="DM/room: prefix klíče kontaktu, kanál: číslo kanálu"),
     before: Optional[int] = Query(None, description="jen zprávy s id menším než toto (starší)"),
     after: Optional[int] = Query(None, description="jen zprávy s id větším než toto (novější)"),
     limit: int = Query(50, ge=1, le=MAX_LIMIT),
@@ -108,10 +115,10 @@ async def list_messages(
                 channel_idx = int(peer)
             except ValueError:
                 raise HTTPException(422, "peer pro kanál musí být číslo")
-        elif kind == "dm":
+        elif kind in ("dm", "room"):
             contact_prefix = peer
         else:
-            raise HTTPException(422, "peer vyžaduje kind=dm nebo kind=channel")
+            raise HTTPException(422, "peer vyžaduje kind=dm, room nebo channel")
 
     rows = await ctx.repo.list_messages(
         kind=kind, contact_prefix=contact_prefix, channel_idx=channel_idx,
@@ -148,7 +155,7 @@ async def ws_ticket(ctx: ServerContext = Depends(get_ctx), principal: Principal 
 
 
 class SendMessageRequest(BaseModel):
-    kind: Literal["channel", "dm"]
+    kind: Literal["channel", "dm", "room"]
     to: Union[int, str] = Field(description="kanál: číslo kanálu; DM: public key kontaktu nebo jeho prefix")
     text: str = Field(min_length=1)
 
@@ -200,6 +207,9 @@ async def send_message(
         contact = await ctx.repo.get_contact(key) if len(key) == 64 else await ctx.repo.find_contact_by_prefix(key)
         if contact is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "kontakt nenalezen")
+        is_room = contact.get("type") == 3
+        if body.kind == "room" and not is_room:
+            raise HTTPException(422, "kontakt není room server")
         if not contact["on_device"] and not ctx.cfg.companion.auto_add_contacts_on_send:
             raise HTTPException(status.HTTP_409_CONFLICT, "kontakt není v companionu")
         if text_bytes > limit:
@@ -207,7 +217,8 @@ async def send_message(
                 422, f"text je příliš dlouhý ({text_bytes} B), limit je {limit} B"
             )
         msg.update(
-            kind="dm",
+            # Zpráva room serveru je technicky DM; ukládáme ji ale do konverzace roomu.
+            kind="room" if is_room else "dm",
             contact_key=contact["public_key"],
             contact_prefix=contact["public_key"][:12],
         )
@@ -481,7 +492,7 @@ async def reboot_device(ctx: ServerContext = Depends(get_ctx), principal: Princi
 # --------------------------------------------------------- stav přečtení
 
 READER_PATTERN = r"^[\w.@+-]{0,64}$"
-CONVERSATION_PATTERN = r"^(dm:[0-9a-f]{12}|ch:\d{1,3})$"
+CONVERSATION_PATTERN = r"^((dm|room):[0-9a-f]{12}|ch:\d{1,3})$"
 
 
 def _reader_key(principal: Principal, reader: Optional[str]) -> str:
@@ -510,7 +521,9 @@ async def get_unread(
 
 
 class ReadRequest(BaseModel):
-    conversation: str = Field(pattern=CONVERSATION_PATTERN, description="dm:<prefix 12 hex> nebo ch:<číslo kanálu>")
+    conversation: str = Field(
+        pattern=CONVERSATION_PATTERN, description="dm:<prefix 12 hex>, room:<prefix 12 hex> nebo ch:<číslo kanálu>"
+    )
     message_id: int = Field(ge=0, description="id poslední přečtené zprávy")
     reader: Optional[str] = Field(None, pattern=READER_PATTERN)
     force: bool = Field(False, description="povolit posun zpět (označit jako nepřečtené)")
@@ -676,3 +689,37 @@ async def import_data(
         ctx.hops.invalidate()
     await ctx.bus.publish("contacts.synced", {"imported": result["contacts_added"]})
     return result
+
+
+# ------------------------------------------- přihlášení k room serveru / repeateru
+
+
+class LoginRequest(BaseModel):
+    password: str = Field("", max_length=15, description="heslo; prázdné = host")
+    remember: bool = Field(False, description="uložit heslo na serveru a přihlašovat znovu po reconnectu")
+
+
+@router.get("/contacts/{key}/login")
+async def get_login(key: str, ctx: ServerContext = Depends(get_ctx), _: Principal = Depends(require("read"))):
+    row = await _contact_or_404(ctx, key)
+    return await ctx.actions.login_state(row["public_key"])
+
+
+@router.post("/contacts/{key}/login")
+async def login(
+    key: str, body: LoginRequest,
+    ctx: ServerContext = Depends(get_ctx), principal: Principal = Depends(require("write")),
+):
+    """Přihlásí se k room serveru nebo repeateru. Čeká na odpověď uzlu (až desítky sekund)."""
+    row = await _contact_or_404(ctx, key)
+    return await _action(ctx.actions.login(row["public_key"], body.password, body.remember, principal.token_id))
+
+
+@router.post("/contacts/{key}/logout")
+async def logout(
+    key: str,
+    forget: bool = Query(True, description="smazat i uložené heslo a vypnout automatické přihlášení"),
+    ctx: ServerContext = Depends(get_ctx), principal: Principal = Depends(require("write")),
+):
+    row = await _contact_or_404(ctx, key)
+    return await _action(ctx.actions.logout(row["public_key"], forget, principal.token_id))

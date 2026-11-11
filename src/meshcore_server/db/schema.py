@@ -87,10 +87,11 @@ channels = Table(
 messages = Table(
     "messages", metadata,
     Column("id", BigIntPK, primary_key=True, autoincrement=True),
-    Column("kind", String(8), nullable=False),          # dm | channel
+    Column("kind", String(8), nullable=False),          # dm | channel | room
     Column("direction", String(3), nullable=False),     # in | out
     Column("contact_prefix", String(12)),               # DM: prvních 6 bajtů klíče (hex)
     Column("contact_key", String(64)),                  # DM: celý klíč, pokud je kontakt znám
+    Column("author_prefix", String(8)),                 # room: prefix klíče skutečného autora (4 B hex)
     Column("channel_idx", Integer),                     # kanál
     Column("sender_name", String(64)),
     Column("text", Text, nullable=False),
@@ -177,6 +178,21 @@ api_tokens = Table(
     Column("created_at", UTCDateTime, nullable=False),
     Column("last_used_at", UTCDateTime),
     Column("revoked_at", UTCDateTime),
+    **MYSQL_OPTS,
+)
+
+# Přihlášení k room serverům a repeaterům.
+remote_logins = Table(
+    "remote_logins", metadata,
+    Column("contact_key", String(64), primary_key=True),
+    Column("password", Text),                           # jen při remember=true; nikdy do API ani exportu
+    Column("auto_login", Boolean, nullable=False, default=False),  # přihlásit znovu po reconnectu
+    Column("logged_in", Boolean, nullable=False, default=False),
+    Column("is_admin", Boolean, nullable=False, default=False),
+    Column("permissions", Integer),
+    Column("last_login_at", UTCDateTime),
+    Column("last_error", Text),
+    Column("updated_at", UTCDateTime, nullable=False),
     **MYSQL_OPTS,
 )
 

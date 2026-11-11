@@ -90,6 +90,7 @@ class CompanionManager:
         self.connected = asyncio.Event()   # nastaveno, když je companion připojen a synchronizován
         self._fetch_task: Optional[asyncio.Task] = None
         self._fetch_again = False
+        self._waiters: list[tuple[set, Callable, asyncio.Future]] = []
 
     # ------------------------------------------------------------------ API
 
@@ -120,6 +121,23 @@ class CompanionManager:
             finally:
                 self.status.last_command_ms = round((time.monotonic() - started) * 1000, 1)
                 self.status.commands_total += 1
+
+    async def wait_for(self, types, match: Callable[[Any], bool], timeout: float):
+        """Počká na událost daného typu (bez držení zámku). Vrátí událost, nebo None po timeoutu.
+
+        Na rozdíl od call() neblokuje ostatní příkazy – vhodné pro odpovědi
+        vzdálených uzlů (přihlášení, stav), které trvají sekundy.
+        """
+        future = asyncio.get_running_loop().create_future()
+        waiter = (set(types), match, future)
+        self._waiters.append(waiter)
+        try:
+            return await asyncio.wait_for(future, timeout)
+        except asyncio.TimeoutError:
+            return None
+        finally:
+            if waiter in self._waiters:
+                self._waiters.remove(waiter)
 
     async def resync(self) -> None:
         """Znovu načte vše z companionu (info, kontakty, kanály) a uloží přes hooky."""
@@ -382,6 +400,13 @@ class CompanionManager:
     async def _dispatch(self, event) -> None:
         if event.type not in (EventType.CONNECTED, EventType.DISCONNECTED):
             self.status.last_rx_at = time.time()
+        for types, match, future in list(self._waiters):
+            if event.type in types and not future.done():
+                try:
+                    if match(event):
+                        future.set_result(event)
+                except Exception:  # noqa: BLE001
+                    logger.debug("Chyba v podmínce čekání na událost", exc_info=True)
         for handler in self._handlers:
             try:
                 await handler(event)

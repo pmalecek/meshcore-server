@@ -46,6 +46,7 @@ def message(row: dict, hops: Optional[list[dict]] = None) -> dict:
         "direction": row["direction"],
         "contact_prefix": row.get("contact_prefix"),
         "contact_key": row.get("contact_key"),
+        "author_prefix": row.get("author_prefix"),
         "channel_idx": row.get("channel_idx"),
         "sender_name": row.get("sender_name"),
         "text": row["text"],
@@ -105,6 +106,21 @@ def contact(row: dict) -> dict:
         "on_device": bool(row.get("on_device")),
         "first_seen_at": row.get("first_seen_at"),
         "updated_at": row.get("updated_at"),
+    })
+
+
+def login(key: str, row: Optional[dict]) -> dict:
+    """Stav přihlášení k uzlu. Heslo se nikdy nevrací."""
+    row = row or {}
+    return to_jsonable({
+        "public_key": key,
+        "logged_in": bool(row.get("logged_in")),
+        "is_admin": bool(row.get("is_admin")),
+        "permissions": row.get("permissions"),
+        "auto_login": bool(row.get("auto_login")),
+        "password_saved": row.get("password") is not None,
+        "last_login_at": row.get("last_login_at"),
+        "last_error": row.get("last_error"),
     })
 
 

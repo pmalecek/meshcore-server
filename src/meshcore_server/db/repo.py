@@ -509,8 +509,8 @@ class Repository:
         result = []
         async with self.engine.connect() as conn:
             for kind, prefix, idx, last_id, count in await conn.execute(stmt):
-                if kind == "dm" and prefix:
-                    key = f"dm:{prefix}"
+                if kind in ("dm", "room") and prefix:
+                    key = f"{kind}:{prefix}"
                 elif kind == "channel" and idx is not None:
                     key = f"ch:{idx}"
                 else:
@@ -522,8 +522,8 @@ class Repository:
         m = s.messages
         stmt = select(func.count()).select_from(m).where(m.c.direction == "in", m.c.id > after_id)
         kind, _, peer = conversation.partition(":")
-        if kind == "dm":
-            stmt = stmt.where(m.c.kind == "dm", m.c.contact_prefix == peer)
+        if kind in ("dm", "room"):
+            stmt = stmt.where(m.c.kind == kind, m.c.contact_prefix == peer)
         else:
             stmt = stmt.where(m.c.kind == "channel", m.c.channel_idx == int(peer))
         async with self.engine.connect() as conn:
@@ -603,3 +603,26 @@ class Repository:
                 ))
                 added += 1
         return added, updated
+
+
+    # --------------------------------------------- přihlášení k uzlům (room/repeater)
+
+    async def get_login(self, key: str) -> Optional[dict]:
+        r = s.remote_logins
+        async with self.engine.connect() as conn:
+            row = (await conn.execute(select(r).where(r.c.contact_key == key))).mappings().first()
+            return dict(row) if row else None
+
+    async def list_logins(self) -> list[dict]:
+        async with self.engine.connect() as conn:
+            return [dict(r) for r in (await conn.execute(select(s.remote_logins))).mappings()]
+
+    async def save_login(self, key: str, **values) -> None:
+        async with self.engine.begin() as conn:
+            await _upsert(conn, s.remote_logins, [{"contact_key": key, "updated_at": utcnow(), **values}],
+                          ["contact_key"])
+
+    async def mark_all_logged_out(self) -> None:
+        async with self.engine.begin() as conn:
+            await conn.execute(update(s.remote_logins).where(s.remote_logins.c.logged_in.is_(True))
+                               .values(logged_in=False, updated_at=utcnow()))

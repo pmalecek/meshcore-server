@@ -249,12 +249,21 @@ class Ingest:
         sender_ts = p.get("sender_timestamp")
         contact = await self._resolve_contact(prefix)
         now = utcnow()
+        is_room = bool(contact) and contact.get("type") == 3
+        sender_name = contact.get("name") if contact else None
+        author = None
+        if is_room and p.get("txt_type") == 2 and p.get("signature"):
+            # Příspěvek z room serveru: skutečný autor je v „signature“ (prefix jeho klíče).
+            author = str(p["signature"]).lower()[:8]
+            author_contact = await self._resolve_contact(author)
+            sender_name = (author_contact or {}).get("name") or author
         row = {
-            "kind": "dm",
+            "kind": "room" if is_room else "dm",
             "direction": "in",
             "contact_prefix": prefix or None,
             "contact_key": contact.get("public_key") if contact else None,
-            "sender_name": contact.get("name") if contact else None,
+            "author_prefix": author,
+            "sender_name": sender_name,
             "text": text,
             "txt_type": p.get("txt_type"),
             "sender_ts": sender_ts,
@@ -265,7 +274,8 @@ class Ingest:
             "rssi": p.get("RSSI"),
             "status": "received",
             "attempts": 0,
-            "dedup_hash": _dedup_hash("dm", prefix, sender_ts, text),
+            "dedup_hash": (_dedup_hash("room", prefix, author, sender_ts, text) if is_room
+                           else _dedup_hash("dm", prefix, sender_ts, text)),
         }
         msg_id = await self.repo.insert_message(row)
         if msg_id is None:
@@ -289,7 +299,7 @@ class Ingest:
         if mc is not None:
             c = mc.get_contact_by_key_prefix(prefix)
             if c:
-                return {"public_key": c["public_key"], "name": c.get("adv_name")}
+                return {"public_key": c["public_key"], "name": c.get("adv_name"), "type": c.get("type")}
         return await self.repo.find_contact_by_prefix(prefix)
 
     async def _advert(self, public_key: Optional[str], data: Optional[dict]) -> None:

@@ -2,7 +2,15 @@
 
 Samostatný server pro [MeshCore](https://github.com/meshcore-dev/MeshCore) companion. Drží jediné spojení s rádiem (TCP/WiFi, USB serial nebo BLE), ukládá přijatá data do databáze a nabízí API pro klienty, např. [meshcore-klient](https://github.com/pmalecek/meshcore-klient). Nepotřebuje Home Assistant.
 
-> **Stav: vývoj, fáze 2, krok 4.** Server se připojí ke companionu, hlídá spojení, ukládá do databáze companion, jeho nastavení, kontakty, kanály, zprávy (kanály i DM) a adverty, nabízí API pro čtení (REST) a živé události (WebSocket) a umí odesílat zprávy přes frontu příkazů, spravovat kontakty, kanály i samotný node, vede nepřečtené zprávy a ukazuje podrobný stav serveru.
+## Co umí
+
+- **Spojení s companionem** přes TCP/WiFi, USB serial nebo BLE; hlídá ho a po výpadku se sám znovu připojí.
+- **Databáze** (SQLite nebo MySQL/MariaDB): companion a jeho nastavení, kontakty, kanály, zprávy z kanálů, DM i room serverů (s trasou a jmény repeaterů), adverty.
+- **Odesílání zpráv** přes frontu, která přežije restart i výpadek companionu: kanály s regionem (flood scope), DM s potvrzením a opakováním, příspěvky do room serverů; u kanálových zpráv počítá, kolikrát je zaslechl zopakované repeatery.
+- **Správa companionu:** kontakty (oblíbené, automatické uvolňování místa), kanály, jméno, poloha, výkon, parametry rádia, advert, restart.
+- **Room servery a repeatery:** přihlášení (i automatické po reconnectu), stav, telemetrie, sousedé, ACL a CLI příkazy.
+- **API:** REST a WebSocket se živými událostmi a doplněním zmeškaných, tokeny s oprávněním read/write/admin, nepřečtené zprávy pro jednotlivé uživatele klienta, podrobný stav serveru.
+- **Provoz:** Docker i pip/systemd, migrace schématu, pročišťování historie, zálohy, export a import kontaktů a kanálů.
 
 ## Požadavky
 

@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "meshcore-server"
+description = "Samostatný server pro MeshCore companion: drží spojení s rádiem, ukládá data do DB a nabízí API pro klienty."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Petr Maleček" }]
+requires-python = ">=3.11"
+dynamic = ["version"]
+dependencies = [
+    "meshcore>=2.3,<3",
+    "pydantic>=2.6,<3",
+    "PyYAML>=6.0",
+    "SQLAlchemy[asyncio]>=2.0,<3",
+    "aiosqlite>=0.19",
+    "alembic>=1.13",
+    "fastapi>=0.110",
+    "uvicorn>=0.30",
+    "websockets>=12",
+    "psutil>=5.9",
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Communications :: Ham Radio",
+]
+
+[project.optional-dependencies]
+mysql = ["aiomysql>=0.2", "PyMySQL>=1.1"]
+
+[project.urls]
+Homepage = "https://github.com/pmalecek/meshcore-server"
+
+[project.scripts]
+meshcore-server = "meshcore_server.cli:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "meshcore_server.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+meshcore_server = ["db/migrations/script.py.mako"]

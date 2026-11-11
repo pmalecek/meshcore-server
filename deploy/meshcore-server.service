@@ -1,0 +1,18 @@
+[Unit]
+Description=meshcore-server – server pro MeshCore companion
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=meshcore
+Group=meshcore
+WorkingDirectory=/var/lib/meshcore-server
+ExecStart=/opt/meshcore-server/venv/bin/meshcore-server -c /etc/meshcore-server/config.yaml run
+Restart=on-failure
+RestartSec=5
+# Pro připojení přes USB serial přidejte uživatele do skupiny dialout:
+#   usermod -aG dialout meshcore
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,64 @@
+# meshcore-server – ukázková konfigurace
+# Zkopírujte jako config.yaml a upravte. Každou hodnotu lze přepsat proměnnou
+# prostředí s prefixem MCS_ (vnoření dvěma podtržítky), např.:
+#   MCS_COMPANION__TCP__HOST=192.168.1.160
+
+companion:
+  # Způsob připojení: tcp | serial | ble
+  transport: tcp
+
+  tcp:
+    host: 192.168.1.160   # IP adresa companionu na WiFi
+    port: 5000
+
+  serial:
+    port: /dev/ttyUSB0
+    baudrate: 115200
+
+  ble:
+    address:              # MAC adresa; prázdné = automatické hledání
+    pin:
+
+  command_timeout: 10     # s, jak dlouho čekat na odpověď companionu
+  keepalive_interval: 30  # s, jak často ověřovat spojení (0 = vypnuto)
+  keepalive_failures: 2   # po kolika neúspěšných pokusech se znovu připojit
+  set_time_on_connect: true
+  decrypt_channel_logs: true  # u kanálových zpráv doplnit trasu, SNR a RSSI
+  allow_device_change: false  # true = povolit jiný companion, než je uložený v DB
+  auto_add_contacts_on_send: true  # DM kontaktu, který není v companionu, ho tam nejdřív přidá
+  dm_max_attempts: 3          # pokusy o doručení DM; poslední jde floodem
+  message_expiry_minutes: 10  # zpráva, která do této doby neodejde, skončí jako failed
+  max_text_bytes: 160         # limit firmwaru v bajtech UTF-8 (emoji = 4 B); u kanálu včetně „jméno: “
+
+  reconnect:
+    initial_delay: 2      # s, první prodleva před dalším pokusem
+    max_delay: 60         # s, prodleva se zdvojnásobuje až do tohoto limitu
+
+server:
+  host: 0.0.0.0
+  port: 8080
+  docs_enabled: true      # dokumentace API na http://<server>:8080/docs
+  cors_origins: []        # např. ["https://meshcore.example.cz"] pro volání přímo z prohlížeče
+  trusted_proxies:        # reverse proxy, jejichž X-Forwarded-For se bere jako IP klienta
+    - 127.0.0.1
+
+database:
+  driver: sqlite          # sqlite | mysql
+  sqlite_path: data/meshcore.db
+  mysql:
+    host: localhost
+    port: 3306
+    database: meshcore_server
+    user: meshcore
+    password: ""
+  auto_migrate: true      # při startu převést schéma DB na nejnovější verzi
+  events_retention_days: 7  # jak dlouho držet události pro WebSocket ?since=
+  retention:              # automatické pročišťování (dny); 0 = nemazat
+    messages_days: 0
+    adverts_days: 0
+    commands_days: 0
+
+logging:
+  level: INFO             # DEBUG | INFO | WARNING | ERROR
+  log_events: true        # vypisovat události z companionu
+  log_noisy_events: false # i časté ladicí události

@@ -14,6 +14,7 @@ from sqlalchemy import text
 
 from .. import __version__, serialize
 from ..auth import TICKET_TTL, Principal
+from ..companion.ingest import public_battery
 from ..db.types import utcnow
 from .context import ServerContext
 from .deps import get_ctx, require
@@ -52,6 +53,7 @@ async def get_status(ctx: ServerContext = Depends(get_ctx), _: Principal = Depen
             "last_error": st.last_error,
             "name": st.self_info.get("name"),
             "public_key": st.self_info.get("public_key"),
+            "battery": public_battery(st.battery),
         },
         "events": {"last_seq": ctx.bus.last_seq},
     })

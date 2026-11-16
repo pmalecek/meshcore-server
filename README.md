@@ -123,7 +123,7 @@ Token se posílá v hlavičce `Authorization: Bearer <token>`. Interaktivní dok
 | Metoda | Cesta | Popis |
 | --- | --- | --- |
 | GET | `/health` | Stav pro healthcheck (bez tokenu) |
-| GET | `/api/v1/status` | Verze, uptime, stav spojení s companionem, poslední `seq` |
+| GET | `/api/v1/status` | Verze, uptime, stav spojení s companionem, baterie companionu, poslední `seq` |
 | GET | `/api/v1/device` | Companion a jeho nastavení |
 | GET | `/api/v1/contacts` | Kontakty; filtry `type`, `on_device`, `q` |
 | GET | `/api/v1/contacts/{key}` | Kontakt podle klíče nebo jeho prefixu |
@@ -267,7 +267,7 @@ Připojení `ws://<server>:8080/api/v1/ws?token=<token>` (z prohlížeče místo
 {"seq": 123, "type": "message.received", "ts": "2026-11-11T09:03:19Z", "data": {…}}
 ```
 
-Typy událostí: `message.received` (příchozí), `message.created` (odchozí zařazená do fronty), `message.status` (změna stavu odchozí), `command.finished`, `contact.updated`, `contact.deleted`, `contacts.synced`, `contact.login`, `read.updated`, `channels.updated`, `advert.received`, `device.updated`, `device.connection`.
+Typy událostí: `message.received` (příchozí), `message.created` (odchozí zařazená do fronty), `message.status` (změna stavu odchozí), `command.finished`, `contact.updated`, `contact.deleted`, `contacts.synced`, `contact.login`, `read.updated`, `channels.updated`, `advert.received`, `device.updated`, `device.connection`, `device.battery` (napětí a odhad nabití companionu – při změně o 20 mV, jinak nejvýš jednou za 10 minut).
 
 Po výpadku spojení se klient připojí s `&since=<poslední seq>` a server mu nejdřív pošle zmeškané události. Pokud už je nemá (drží je `database.events_retention_days`, výchozí 7 dní), pošle `{"type": "resync.required"}` a klient si data načte znovu přes REST. Neplatný token ukončí spojení kódem 4401. Klient může posílat `{"type": "ping"}`, server odpoví `{"type": "pong"}`.
 

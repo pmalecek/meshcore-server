@@ -72,6 +72,7 @@ class CompanionStatus:
     last_command_ms: Optional[float] = None  # jak dlouho trval poslední příkaz
     commands_total: int = 0
     channels: list[dict] = field(default_factory=list)
+    battery: Optional[dict] = None  # poslední odpověď na get_bat (napětí, úložiště), viz battery_info()
 
 
 class CompanionManager:

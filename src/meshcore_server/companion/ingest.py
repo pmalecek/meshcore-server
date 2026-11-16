@@ -10,6 +10,7 @@ import asyncio
 import hashlib
 from datetime import datetime, timezone
 import logging
+import time
 from typing import TYPE_CHECKING, Any, Optional
 
 from meshcore import EventType
@@ -58,6 +59,42 @@ def _path_str(value: Any) -> Optional[str]:
     return text[:255] if text else None
 
 
+BATTERY_STEP_MV = 20         # menší výkyvy napětí neposílat jako událost
+BATTERY_EVENT_EVERY = 600    # ale aspoň jednou za 10 minut
+
+
+def battery_percent(mv: Optional[int]) -> Optional[int]:
+    """Odhad nabití Li-ion článku z napětí: lineárně 3,0 V = 0 % … 4,2 V = 100 % (jako aplikace MeshCore)."""
+    if not mv:
+        return None  # 0 = companion napětí neměří (napájení bez baterie)
+    return max(0, min(100, round((mv - 3000) / 12)))
+
+
+def battery_info(p: dict) -> dict:
+    mv = p.get("level")
+    mv = int(mv) if isinstance(mv, (int, float)) else None
+    return {
+        "mv": mv,
+        "percent": battery_percent(mv),
+        "used_kb": p.get("used_kb"),
+        "total_kb": p.get("total_kb"),
+        "at": time.time(),
+    }
+
+
+def public_battery(info: Optional[dict]) -> Optional[dict]:
+    """Tvar pro API (/status, událost device.battery)."""
+    if not info:
+        return None
+    return {
+        "voltage": round(info["mv"] / 1000, 3) if info.get("mv") else None,
+        "percent": info.get("percent"),
+        "storage_used_kb": info.get("used_kb"),
+        "storage_total_kb": info.get("total_kb"),
+        "updated_at": datetime.fromtimestamp(info["at"], tz=timezone.utc),
+    }
+
+
 class Ingest:
     def __init__(
         self, repo: Repository, cfg: "CompanionConfig", bus: Optional["EventBus"] = None, hops=None
@@ -81,6 +118,23 @@ class Ingest:
     async def _publish(self, type_: str, data: Any) -> None:
         if self.bus is not None:
             await self.bus.publish(type_, data)
+
+    async def _battery(self, p: dict) -> None:
+        """Odpověď na get_bat (chodí s každým keepalivem). Událost device.battery se posílá
+        jen při změně o aspoň BATTERY_STEP_MV nebo jednou za BATTERY_EVENT_EVERY sekund."""
+        if self.manager is None or "level" not in p:
+            return
+        st = self.manager.status
+        prev = st.battery or {}
+        info = battery_info(p)
+        now = info["at"]
+        last_pub = prev.get("published_at") or 0
+        publish = (not prev or abs((info["mv"] or 0) - (prev.get("mv") or 0)) >= BATTERY_STEP_MV
+                   or now - last_pub >= BATTERY_EVENT_EVERY)
+        info["published_at"] = now if publish else last_pub
+        st.battery = info
+        if publish:
+            await self._publish("device.battery", public_battery(info))
 
     async def on_state(self, status) -> None:
         await self._publish("device.connection", {
@@ -154,6 +208,13 @@ class Ingest:
         logger.info(
             "Uloženo do DB: %d kontaktů (%d mimo companion), %d kanálů", len(contacts), off, len(channels)
         )
+        # napětí baterie hned po připojení (dál ho obnovuje keepalive)
+        try:
+            res = await mc.commands.get_bat()
+            if getattr(res, "type", None) == EventType.BATTERY and isinstance(res.payload, dict):
+                await self._battery(res.payload)
+        except Exception:  # noqa: BLE001 – baterie není pro připojení podstatná
+            logger.debug("Napětí baterie se nepodařilo zjistit", exc_info=True)
         # Po úvodní synchronizaci klientům stačí vědět, že mají data načíst znovu.
         await self._publish("device.updated", serialize.device(
             await self.repo.get_device(), await self.repo.get_device_config()
@@ -188,6 +249,8 @@ class Ingest:
         p = event.payload if isinstance(event.payload, dict) else {}
         if t == EventType.CHANNEL_MSG_RECV:
             await self._channel_message(p)
+        elif t == EventType.BATTERY:
+            await self._battery(p)
         elif t == EventType.CONTACT_MSG_RECV:
             if p.get("txt_type") == 1:
                 return  # odpověď na CLI příkaz – nepatří do zpráv, vrací ji API /cli

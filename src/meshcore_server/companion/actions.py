@@ -17,6 +17,7 @@ from .. import serialize
 from ..db.repo import Repository
 from ..db.types import utcnow
 from .manager import CompanionUnavailable, is_timeout
+from .scope import ScopeError, with_scope
 
 if TYPE_CHECKING:
     from ..events import EventBus
@@ -200,6 +201,12 @@ class DeviceActions:
 
         return await self._run("contact_reset_path", {"public_key": key}, token_id, go())
 
+    async def set_region(self, key: str, region: Optional[str]) -> dict:
+        """Region pro odesílání kontaktu (DM, room server, správa uzlu). Ukládá se jen na serveru."""
+        await self.repo.set_contact_region(key, region)
+        await self._publish_contact(key)
+        return serialize.contact(await self.repo.get_contact(key))
+
     async def set_favorite(self, key: str, favorite: bool) -> dict:
         await self.repo.update_contact_fields(key, favorite=favorite)
         await self._publish_contact(key)
@@ -338,7 +345,10 @@ class DeviceActions:
         await self.ensure_on_device(key)
 
         async def send(mc):
-            res = await mc.commands._send_login_raw(key, password)
+            try:
+                res = await with_scope(mc, row.get("region"), lambda: mc.commands._send_login_raw(key, password))
+            except ScopeError as exc:
+                raise ActionError(str(exc)) from exc
             _check(res, "odeslání přihlášení")
             return res
 
@@ -448,7 +458,10 @@ class DeviceActions:
             started = asyncio.get_running_loop().time()
 
             async def do(mc):
-                res = await send(mc)
+                try:
+                    res = await with_scope(mc, row.get("region"), lambda: send(mc))
+                except ScopeError as exc:
+                    raise ActionError(str(exc)) from exc
                 _check(res, what)
                 return res
 

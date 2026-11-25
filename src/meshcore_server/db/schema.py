@@ -68,6 +68,7 @@ contacts = Table(
     Column("last_message_at", UTCDateTime),
     Column("favorite", Boolean, nullable=False, default=False),
     Column("on_device", Boolean, nullable=False, default=False),
+    Column("region", String(64)),   # flood scope pro zprávy kontaktu (#plzen, * = bez regionu); NULL = výchozí
     Column("first_seen_at", UTCDateTime, nullable=False),
     Column("updated_at", UTCDateTime, nullable=False),
     Index("ix_contacts_name", "name"),
@@ -79,7 +80,7 @@ channels = Table(
     Column("idx", Integer, primary_key=True, autoincrement=False),
     Column("name", String(64), nullable=False),
     Column("secret", String(32)),
-    Column("region", String(64)),   # flood scope kanálu (#plzen); NULL = výchozí region zařízení
+    Column("region", String(64)),   # flood scope kanálu (#plzen, * = bez regionu); NULL = výchozí region zařízení
     Column("updated_at", UTCDateTime, nullable=False),
     **MYSQL_OPTS,
 )

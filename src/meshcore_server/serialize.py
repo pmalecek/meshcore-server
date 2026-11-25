@@ -104,6 +104,7 @@ def contact(row: dict) -> dict:
         "last_message_at": row.get("last_message_at"),
         "favorite": bool(row.get("favorite")),
         "on_device": bool(row.get("on_device")),
+        "region": row.get("region"),
         "first_seen_at": row.get("first_seen_at"),
         "updated_at": row.get("updated_at"),
     })

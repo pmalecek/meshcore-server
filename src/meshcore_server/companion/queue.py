@@ -27,6 +27,7 @@ from .. import serialize
 from ..db.repo import Repository
 from ..db.types import utcnow
 from .manager import CompanionUnavailable, is_timeout
+from .scope import ScopeError, with_scope
 
 if TYPE_CHECKING:
     from ..config import CompanionConfig
@@ -184,16 +185,12 @@ class CommandQueue:
         region = channel.get("region")
 
         async def do(mc):
-            if region:
-                res = await mc.commands.set_flood_scope(region)
-                if res.type == EventType.ERROR:
-                    raise CommandError(f"nastavení regionu {region} selhalo: {res.payload}")
             try:
-                return await mc.commands.send_chan_msg(msg["channel_idx"], msg["text"], msg["sender_ts"])
-            finally:
-                if region:
-                    # Vrátit výchozí region, ať neplatí pro další zprávy.
-                    await mc.commands.set_flood_scope(None)
+                return await with_scope(
+                    mc, region, lambda: mc.commands.send_chan_msg(msg["channel_idx"], msg["text"], msg["sender_ts"])
+                )
+            except ScopeError as exc:
+                raise CommandError(str(exc)) from exc
 
         res = await self.manager.call(do)
         self._check_result(res, "odeslání do kanálu")
@@ -217,6 +214,9 @@ class CommandQueue:
             except ActionError as exc:
                 raise CommandError(f"kontakt nejde přidat do companionu: {exc}") from exc
 
+        # region kontaktu (platí jen pro odeslání floodem – bez známé trasy nebo po jejím resetu)
+        region = (await self.repo.get_contact(key) or {}).get("region")
+
         async def do(mc):
             if key not in mc.contacts:
                 raise CommandError("kontakt není v companionu")
@@ -226,7 +226,12 @@ class CommandQueue:
                 if contact.get("out_path_len", -1) >= 0:
                     logger.info("DM %d: reset trasy ke kontaktu, poslední pokus floodem", msg["id"])
                     await mc.commands.reset_path(key)
-            return await mc.commands.send_msg(key, msg["text"], msg["sender_ts"], attempt=attempt)
+            try:
+                return await with_scope(
+                    mc, region, lambda: mc.commands.send_msg(key, msg["text"], msg["sender_ts"], attempt=attempt)
+                )
+            except ScopeError as exc:
+                raise CommandError(str(exc)) from exc
 
         res = await self.manager.call(do)
         self._check_result(res, "odeslání DM")

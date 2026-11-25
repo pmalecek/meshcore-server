@@ -15,6 +15,7 @@ from sqlalchemy import text
 from .. import __version__, serialize
 from ..auth import TICKET_TTL, Principal
 from ..companion.ingest import public_battery
+from ..companion.scope import normalize_region
 from ..db.types import utcnow
 from .context import ServerContext
 from .deps import get_ctx, require
@@ -239,7 +240,7 @@ async def get_command(cmd_id: int, ctx: ServerContext = Depends(get_ctx), _: Pri
 
 class ChannelUpdateRequest(BaseModel):
     region: Optional[str] = Field(
-        None, max_length=31, description="region (flood scope) kanálu, např. #plzen; null = výchozí region zařízení"
+        None, max_length=31, description="region (flood scope) kanálu, např. #plzen; * = bez regionu; null = výchozí region zařízení"
     )
 
 
@@ -251,11 +252,10 @@ async def update_channel(
     _: Principal = Depends(require("write")),
 ):
     """Nastaví region kanálu. Ukládá se jen na serveru; companion si region kanálu nepamatuje."""
-    region = (body.region or "").strip() or None
-    if region and not region.startswith("#"):
-        region = "#" + region
-    if region and len(region.encode("utf-8")) > 31:
-        raise HTTPException(422, "region může mít nejvýš 31 bajtů")
+    try:
+        region = normalize_region(body.region)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
     if not await ctx.repo.set_channel_region(idx, region):
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"kanál {idx} neexistuje")
     channels = await ctx.repo.list_channels()
@@ -289,6 +289,11 @@ async def _action(coro):
 
 class ContactUpdateRequest(BaseModel):
     favorite: Optional[bool] = Field(None, description="oblíbený kontakt se z companionu nikdy neodebere")
+    region: Optional[str] = Field(
+        None, max_length=31,
+        description="region (flood scope) pro odesílání kontaktu floodem – DM, room server, správa uzlu; "
+                    "#plzen, * = bez regionu, null = výchozí region zařízení",
+    )
 
 
 @router.patch("/contacts/{key}")
@@ -297,9 +302,16 @@ async def update_contact(
     ctx: ServerContext = Depends(get_ctx), _: Principal = Depends(require("write")),
 ):
     row = await _contact_or_404(ctx, key)
+    result = serialize.contact(row)
+    if "region" in body.model_fields_set:
+        try:
+            region = normalize_region(body.region)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc))
+        result = await ctx.actions.set_region(row["public_key"], region)
     if body.favorite is not None:
-        return await ctx.actions.set_favorite(row["public_key"], body.favorite)
-    return serialize.contact(row)
+        result = await ctx.actions.set_favorite(row["public_key"], body.favorite)
+    return result
 
 
 @router.post("/contacts/{key}/device")
@@ -387,9 +399,10 @@ async def set_channel(
         raise HTTPException(422, "jméno kanálu může mít nejvýš 31 bajtů")
     if not name.startswith("#") and not body.secret:
         raise HTTPException(422, "soukromý kanál (jméno bez #) potřebuje secret; hashtag kanál začíná #")
-    region = (body.region or "").strip() or None
-    if region and not region.startswith("#"):
-        region = "#" + region
+    try:
+        region = normalize_region(body.region)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
     secret = None if name.startswith("#") else body.secret.lower()
     return await _action(ctx.actions.set_channel(idx, name, secret, region, principal.token_id))
 

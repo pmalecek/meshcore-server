@@ -333,6 +333,13 @@ class Repository:
             row = (await conn.execute(select(s.channels).where(s.channels.c.idx == idx))).mappings().first()
             return dict(row) if row else None
 
+    async def set_contact_region(self, public_key: str, region: Optional[str]) -> bool:
+        async with self.engine.begin() as conn:
+            result = await conn.execute(
+                update(s.contacts).where(s.contacts.c.public_key == public_key).values(region=region, updated_at=utcnow())
+            )
+            return (result.rowcount or 0) > 0
+
     async def set_channel_region(self, idx: int, region: Optional[str]) -> bool:
         async with self.engine.begin() as conn:
             result = await conn.execute(

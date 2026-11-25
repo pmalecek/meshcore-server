@@ -6,7 +6,7 @@ Samostatný server pro [MeshCore](https://github.com/meshcore-dev/MeshCore) comp
 
 - **Spojení s companionem** přes TCP/WiFi, USB serial nebo BLE; hlídá ho a po výpadku se sám znovu připojí.
 - **Databáze** (SQLite nebo MySQL/MariaDB): companion a jeho nastavení, kontakty, kanály, zprávy z kanálů, DM i room serverů (s trasou a jmény repeaterů), adverty.
-- **Odesílání zpráv** přes frontu, která přežije restart i výpadek companionu: kanály s regionem (flood scope), DM s potvrzením a opakováním, příspěvky do room serverů; u kanálových zpráv počítá, kolikrát je zaslechl zopakované repeatery.
+- **Odesílání zpráv** přes frontu, která přežije restart i výpadek companionu: kanály a kontakty s regionem (flood scope), DM s potvrzením a opakováním, příspěvky do room serverů; u kanálových zpráv počítá, kolikrát je zaslechl zopakované repeatery.
 - **Správa companionu:** kontakty (oblíbené, automatické uvolňování místa), kanály, jméno, poloha, výkon, parametry rádia, advert, restart.
 - **Room servery a repeatery:** přihlášení (i automatické po reconnectu), stav, telemetrie, sousedé, ACL a CLI příkazy.
 - **API:** REST a WebSocket se živými událostmi a doplněním zmeškaných, tokeny s oprávněním read/write/admin, nepřečtené zprávy pro jednotlivé uživatele klienta, podrobný stav serveru.
@@ -135,7 +135,7 @@ Token se posílá v hlavičce `Authorization: Bearer <token>`. Interaktivní dok
 | PATCH | `/api/v1/channels/{idx}` | Jen region (flood scope) kanálu (`write`) |
 | PUT | `/api/v1/channels/{idx}` | Nastavení kanálu: `name`, `secret`, `region` (`write`) |
 | DELETE | `/api/v1/channels/{idx}` | Smazání kanálu z companionu (`write`) |
-| PATCH | `/api/v1/contacts/{key}` | `favorite` – oblíbený se z companionu nikdy neodebere (`write`) |
+| PATCH | `/api/v1/contacts/{key}` | `favorite` – oblíbený se z companionu nikdy neodebere; `region` – region pro odesílání kontaktu floodem (`write`) |
 | POST | `/api/v1/contacts/{key}/device` | Přidání kontaktu z DB do companionu (`write`) |
 | DELETE | `/api/v1/contacts/{key}/device` | Odebrání z companionu, v DB zůstane (`write`) |
 | DELETE | `/api/v1/contacts/{key}` | Smazání z companionu i DB, zprávy zůstanou (`admin`) |
@@ -188,7 +188,9 @@ Odpověď `202` vrátí uloženou zprávu (`status: pending`) a `command_id`. Zp
 
 Délka textu je omezená firmwarem na 160 bajtů UTF-8 (emoji = 4 B). Do kanálu se odesílá `jméno: text`, proto je tam limit kratší o jméno nodu; delší text API odmítne (firmware by ho tiše ořízl). DM jde jen kontaktu, který je v companionu (`on_device`).
 
-**Region kanálu:** `PATCH /api/v1/channels/4` s `{"region": "#plzen"}` (nebo `null` pro výchozí region zařízení). Companion si region kanálu nepamatuje, proto ho drží server a před každou zprávou do kanálu ho nastaví.
+**Region kanálu:** `PATCH /api/v1/channels/4` s `{"region": "#plzen"}` (`"*"` = bez regionu, `null` = výchozí region zařízení). Companion si region kanálu nepamatuje, proto ho drží server a před každou zprávou do kanálu ho nastaví.
+
+**Region kontaktu:** `PATCH /api/v1/contacts/{key}` s `{"region": "#plzen"}` (stejné hodnoty). Server ho nastaví před DM, příspěvkem do room serveru, přihlášením (i automatickým) a požadavky na správu uzlu, a hned potom vrátí výchozí. Uplatní se jen u paketů odeslaných floodem – bez známé trasy, po jejím resetu a u posledního pokusu o doručení DM; zprávy se známou trasou region nepoužívají.
 
 ### Kontakty a kanály
 

@@ -7,8 +7,9 @@ Samostatný server pro [MeshCore](https://github.com/meshcore-dev/MeshCore) comp
 - **Spojení s companionem** přes TCP/WiFi, USB serial nebo BLE; hlídá ho a po výpadku se sám znovu připojí.
 - **Databáze** (SQLite nebo MySQL/MariaDB): companion a jeho nastavení, kontakty, kanály, zprávy z kanálů, DM i room serverů (s trasou a jmény repeaterů), adverty.
 - **Odesílání zpráv** přes frontu, která přežije restart i výpadek companionu: kanály a kontakty s regionem (flood scope), DM s potvrzením a opakováním, příspěvky do room serverů; u kanálových zpráv počítá, kolikrát je zaslechl zopakované repeatery.
-- **Správa companionu:** kontakty (oblíbené, automatické uvolňování místa), kanály, jméno, poloha, výkon, parametry rádia, advert, restart.
+- **Správa companionu:** kontakty (oblíbené, automatické uvolňování místa, import vizitky), kanály, jméno, poloha, výkon, parametry rádia, advert, restart.
 - **Room servery a repeatery:** přihlášení (i automatické po reconnectu), stav, telemetrie, sousedé, ACL a CLI příkazy.
+- **Cesty:** zjištění cesty ke kontaktu a trace se SNR na každém skoku.
 - **Sledování uzlů:** pravidelný dotaz na stav repeaterů a room serverů a na telemetrii klientů, online/offline a historie hodnot pro grafy.
 - **API:** REST a WebSocket se živými událostmi a doplněním zmeškaných, tokeny s oprávněním read/write/admin, nepřečtené zprávy pro jednotlivé uživatele klienta, podrobný stav serveru.
 - **Provoz:** Docker i pip/systemd, migrace schématu, pročišťování historie, zálohy, export a import kontaktů a kanálů.
@@ -153,6 +154,9 @@ Token se posílá v hlavičce `Authorization: Bearer <token>`. Interaktivní dok
 | GET | `/api/v1/contacts/{key}/login` | Stav přihlášení |
 | POST | `/api/v1/contacts/{key}/status` | Stav repeateru/room serveru (`write`) |
 | POST | `/api/v1/contacts/{key}/telemetry` | Telemetrie uzlu (`write`) |
+| POST | `/api/v1/contacts/{key}/path-discovery` | Zjistit cestu (flood dotaz; companion si cestu uloží) (`write`) |
+| POST | `/api/v1/contacts/{key}/trace` | Trace tam a zpět: SNR na skocích, odezva; bez cesty ji nejdřív zjistí (`write`) |
+| POST | `/api/v1/contacts/import-card` | Import vizitky kontaktu `{"card": "meshcore://…"}` (`write`) |
 | POST | `/api/v1/contacts/{key}/neighbours` | Sousedé uzlu (`write`) |
 | POST | `/api/v1/contacts/{key}/acl` | Oprávnění (ACL) uzlu (`admin`) |
 | POST | `/api/v1/contacts/{key}/cli` | CLI příkaz na uzlu, vrátí jeho odpověď (`admin`) |

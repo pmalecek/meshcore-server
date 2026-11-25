@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
+import time
 from typing import TYPE_CHECKING, Any, Optional
 
 from meshcore import BinaryReqType, EventType
@@ -34,6 +36,8 @@ LOGIN_TYPES = (2, 3)        # repeater, room server
 TELEMETRY_TYPES = (1, 2, 3, 4)  # telemetrie: i klienti a senzory
 REMOTE_MIN_TIMEOUT = 8.0    # s, odpověď vzdáleného uzlu
 REMOTE_MAX_TIMEOUT = 90.0   # s
+PATH_MAX_TIMEOUT = 30.0     # s, odpověď na zjištění cesty (flood tam i zpět)
+TRACE_MAX_TIMEOUT = 45.0    # s, návrat trace paketu
 
 
 class ActionError(Exception):
@@ -316,6 +320,151 @@ class DeviceActions:
     async def _device_values(self) -> dict:
         row = await self.repo.get_device() or {}
         return {k: v for k, v in row.items() if k not in ("id", "first_seen_at", "updated_at", "last_connected_at")}
+
+    # ------------------------------------------------- cesta, trace, vizitka
+
+    async def _contact_on_device(self, key: str) -> dict:
+        row = await self.repo.get_contact(key)
+        if row is None:
+            raise ActionError("kontakt v databázi neexistuje")
+        await self.ensure_on_device(key)
+        mc = self.manager.mc
+        if mc is None or key not in mc.contacts:
+            raise ActionError("kontakt není v companionu")
+        return row
+
+    async def _refresh_contact(self, key: str) -> None:
+        """Načte kontakt z companionu (trasa se mohla změnit) a uloží ho."""
+        async def do(mc):
+            res = await mc.commands.get_contact_by_key(bytes.fromhex(key))
+            if res.type == EventType.NEXT_CONTACT and isinstance(res.payload, dict):
+                mc.contacts[key] = res.payload
+                return res.payload
+            return None
+
+        stored = await self.manager.call(do)
+        if stored:
+            await self.repo.upsert_contacts([stored], on_device=True)
+        await self._publish_contact(key)
+
+    async def _discover(self, key: str, row: dict) -> dict:
+        """Zjištění cesty (path discovery): flood požadavek, odpověď nese cestu tam i zpět."""
+        prefix = key[:12]
+        waiter = asyncio.create_task(self.manager.wait_for(
+            (EventType.PATH_RESPONSE,), lambda e: (e.payload or {}).get("pubkey_pre") == prefix, PATH_MAX_TIMEOUT,
+        ))
+        await asyncio.sleep(0)  # čekání zaregistrovat dřív, než odpověď dorazí
+        started = time.monotonic()
+
+        async def do(mc):
+            try:
+                return await with_scope(mc, row.get("region"), lambda: mc.commands._send_path_discovery_raw(key))
+            except ScopeError as exc:
+                raise ActionError(str(exc)) from exc
+
+        try:
+            _check(await self.manager.call(do), "zjištění cesty")
+        except BaseException:
+            waiter.cancel()
+            raise
+        event = await waiter
+        if event is None:
+            raise ActionError(f"uzel {row.get('name') or prefix} na zjištění cesty neodpověděl do {PATH_MAX_TIMEOUT:.0f} s")
+        p = event.payload or {}
+        await self._refresh_contact(key)
+        return {
+            "public_key": key,
+            "elapsed": round(time.monotonic() - started, 2),
+            "out_path_len": p.get("out_path_len"),
+            "out_path": p.get("out_path"),
+            "out_path_hash_len": p.get("out_path_hash_len", 1),
+            "in_path_len": p.get("in_path_len"),
+            "in_path": p.get("in_path"),
+        }
+
+    async def path_discover(self, key: str, token_id: Optional[int] = None) -> dict:
+        async def go():
+            row = await self._contact_on_device(key)
+            async with self._node_lock(key):
+                result = await self._discover(key, row)
+            result["contact"] = serialize.contact(await self.repo.get_contact(key))
+            return result
+
+        return await self._run("path_discover", {"public_key": key}, token_id, go())
+
+    async def trace(self, key: str, token_id: Optional[int] = None) -> dict:
+        """Trace k uzlu a zpět po známé cestě (bez ní nejdřív zjistí cestu). Vrací SNR na každém skoku.
+
+        Cesta se skládá z 1bajtových otisků: trasa tam + cíl + trasa zpět (jako integrace HA),
+        delší otisky v sítích spolehlivě nedojdou.
+        """
+        async def go():
+            row = await self._contact_on_device(key)
+            async with self._node_lock(key):
+                contact = self.manager.mc.contacts.get(key) or {}
+                opl = contact.get("out_path_len", -1)
+                path_hex = contact.get("out_path") or ""
+                width = (int(contact.get("out_path_hash_mode") or 0) + 1) * 2
+                discovered = None
+                if opl is None or opl < 0:
+                    discovered = await self._discover(key, row)
+                    opl = discovered.get("out_path_len") or 0
+                    path_hex = discovered.get("out_path") or ""
+                    width = int(discovered.get("out_path_hash_len") or 1) * 2
+                hops = [path_hex[i * width:i * width + 2] for i in range(opl) if len(path_hex) >= i * width + 2]
+                full = "".join(hops) + key[:2] + "".join(reversed(hops))
+                tag = random.randint(1, 0xFFFFFFFF)
+                waiter = asyncio.create_task(self.manager.wait_for(
+                    (EventType.TRACE_DATA,), lambda e: (e.payload or {}).get("tag") == tag, TRACE_MAX_TIMEOUT,
+                ))
+                await asyncio.sleep(0)
+                started = time.monotonic()
+                try:
+                    _check(await self.manager.call(
+                        lambda mc: mc.commands.send_trace(0, tag, 0, bytes.fromhex(full))), "odeslání trace")
+                except BaseException:
+                    waiter.cancel()
+                    raise
+                event = await waiter
+                rtt = int((time.monotonic() - started) * 1000)
+            if event is None:
+                raise ActionError(f"uzel {row.get('name') or key[:12]} na trace neodpověděl do {TRACE_MAX_TIMEOUT:.0f} s")
+            p = event.payload or {}
+            nodes = list(p.get("path") or [])  # [{hash, snr}…, {snr} = náš příjem]; jména podle 1B otisku dohledá klient
+            return {
+                "public_key": key,
+                "hops": p.get("path_len", len(hops) * 2 + 1),
+                "path": nodes,
+                "round_trip_ms": rtt,
+                "final_snr": nodes[-1].get("snr") if nodes and isinstance(nodes[-1], dict) else None,
+                "discovered": discovered is not None,
+            }
+
+        return await self._run("trace", {"public_key": key}, token_id, go())
+
+    async def import_contact(self, card_hex: str, token_id: Optional[int] = None) -> dict:
+        """Import vizitky kontaktu (export z aplikace MeshCore – advert jako hex)."""
+        async def go():
+            try:
+                data = bytes.fromhex(card_hex)
+            except ValueError as exc:
+                raise ActionError("vizitka musí být hex řetězec") from exc
+            if len(data) < 50:
+                raise ActionError("vizitka je příliš krátká")
+            await self._make_room()
+
+            async def do(mc):
+                _check(await mc.commands.import_contact(data), "import vizitky")
+
+            await self.manager.call(do)
+            before = {r["public_key"] for r in await self.repo.list_contacts(on_device=True)}
+            await self.manager.resync()
+            new = [serialize.contact(r) for r in await self.repo.list_contacts(on_device=True)
+                   if r["public_key"] not in before]
+            logger.info("Vizitka importována%s", f": {new[0]['name']}" if new else "")
+            return {"imported": new}
+
+        return await self._run("contact_import", {"length": len(card_hex) // 2}, token_id, go())
 
     async def resync(self, token_id: Optional[int] = None) -> None:
         await self._run("sync", {}, token_id, self.manager.resync())

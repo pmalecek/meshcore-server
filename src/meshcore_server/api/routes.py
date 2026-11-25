@@ -759,6 +759,34 @@ async def node_telemetry(key: str, ctx: ServerContext = Depends(get_ctx), princi
     return await _action(ctx.actions.node_telemetry(row["public_key"], principal.token_id))
 
 
+@router.post("/contacts/{key}/path-discovery")
+async def path_discovery(key: str, ctx: ServerContext = Depends(get_ctx), principal: Principal = Depends(require("write"))):
+    """Zjistit cestu ke kontaktu (flood dotaz, odpověď nese trasu tam i zpět; companion si ji uloží)."""
+    row = await _contact_or_404(ctx, key)
+    return await _action(ctx.actions.path_discover(row["public_key"], principal.token_id))
+
+
+@router.post("/contacts/{key}/trace")
+async def trace(key: str, ctx: ServerContext = Depends(get_ctx), principal: Principal = Depends(require("write"))):
+    """Trace k uzlu a zpět: SNR na každém skoku a doba odezvy. Bez známé cesty ji nejdřív zjistí."""
+    row = await _contact_or_404(ctx, key)
+    return await _action(ctx.actions.trace(row["public_key"], principal.token_id))
+
+
+class ContactImportRequest(BaseModel):
+    card: str = Field(min_length=100, max_length=2000, description="vizitka kontaktu jako hex (export z MeshCore)")
+
+
+@router.post("/contacts/import-card")
+async def import_card(body: ContactImportRequest, ctx: ServerContext = Depends(get_ctx),
+                      principal: Principal = Depends(require("write"))):
+    """Přidá kontakt z exportované vizitky (meshcore://… bez prefixu, hex) do companionu."""
+    card = "".join(body.card.split()).lower()
+    if card.startswith("meshcore://"):
+        card = card[len("meshcore://"):]
+    return await _action(ctx.actions.import_contact(card, principal.token_id))
+
+
 # ---------------------------------------------------------- sledování uzlů
 
 

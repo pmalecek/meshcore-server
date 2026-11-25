@@ -122,6 +122,15 @@ class DatabaseConfig(_Strict):
     retention: RetentionConfig = RetentionConfig()
 
 
+class TrackingConfig(_Strict):
+    """Sledování uzlů (repeatery, room servery, klienti) – pravidelné dotazy na stav a telemetrii."""
+
+    enabled: bool = True
+    interval_minutes: int = Field(30, ge=15)        # jak často se ptát (každý dotaz je paket v síti)
+    max_backoff_minutes: int = Field(360, ge=15)    # nejdelší odstup po opakovaných neúspěších
+    history_days: int = Field(30, ge=1)             # jak dlouho držet hodnoty pro grafy
+
+
 class LoggingConfig(_Strict):
     level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     log_events: bool = True        # vypisovat události z companionu
@@ -132,6 +141,7 @@ class Config(_Strict):
     companion: CompanionConfig
     server: ServerConfig = ServerConfig()
     database: DatabaseConfig = DatabaseConfig()
+    tracking: TrackingConfig = TrackingConfig()
     logging: LoggingConfig = LoggingConfig()
 
     @model_validator(mode="before")

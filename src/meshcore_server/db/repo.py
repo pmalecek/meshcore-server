@@ -629,6 +629,66 @@ class Repository:
             await _upsert(conn, s.remote_logins, [{"contact_key": key, "updated_at": utcnow(), **values}],
                           ["contact_key"])
 
+    # ------------------------------------------------------- sledované uzly
+
+    async def list_tracked(self) -> list[dict]:
+        t, c = s.tracked_nodes, s.contacts
+        stmt = (select(t, c.c.name, c.c.type).select_from(t.outerjoin(c, c.c.public_key == t.c.contact_key))
+                .order_by(c.c.name))
+        async with self.engine.connect() as conn:
+            return [dict(r) for r in (await conn.execute(stmt)).mappings()]
+
+    async def get_tracked(self, key: str) -> Optional[dict]:
+        t, c = s.tracked_nodes, s.contacts
+        stmt = (select(t, c.c.name, c.c.type).select_from(t.outerjoin(c, c.c.public_key == t.c.contact_key))
+                .where(t.c.contact_key == key))
+        async with self.engine.connect() as conn:
+            row = (await conn.execute(stmt)).mappings().first()
+            return dict(row) if row else None
+
+    async def add_tracked(self, key: str) -> None:
+        now = utcnow()
+        async with self.engine.begin() as conn:
+            exists = (await conn.execute(select(s.tracked_nodes.c.contact_key)
+                                         .where(s.tracked_nodes.c.contact_key == key))).first()
+            if exists:
+                await conn.execute(update(s.tracked_nodes).where(s.tracked_nodes.c.contact_key == key)
+                                   .values(next_poll_at=now, updated_at=now))
+            else:
+                await conn.execute(s.tracked_nodes.insert().values(
+                    contact_key=key, added_at=now, next_poll_at=now, failures=0, updated_at=now))
+
+    async def remove_tracked(self, key: str) -> bool:
+        async with self.engine.begin() as conn:
+            n = (await conn.execute(delete(s.tracked_nodes).where(s.tracked_nodes.c.contact_key == key))).rowcount
+            await conn.execute(delete(s.node_samples).where(s.node_samples.c.contact_key == key))
+            return (n or 0) > 0
+
+    async def due_tracked(self, now: datetime) -> list[str]:
+        t = s.tracked_nodes
+        async with self.engine.connect() as conn:
+            rows = await conn.execute(select(t.c.contact_key).where(t.c.next_poll_at <= now).order_by(t.c.next_poll_at))
+            return [r[0] for r in rows]
+
+    async def update_tracked(self, key: str, **values) -> None:
+        async with self.engine.begin() as conn:
+            await conn.execute(update(s.tracked_nodes).where(s.tracked_nodes.c.contact_key == key)
+                               .values(updated_at=utcnow(), **values))
+
+    async def add_node_sample(self, key: str, at: datetime, data: dict) -> None:
+        async with self.engine.begin() as conn:
+            await conn.execute(s.node_samples.insert().values(contact_key=key, at=at, data=data))
+
+    async def node_samples(self, key: str, since: datetime) -> list[dict]:
+        n = s.node_samples
+        async with self.engine.connect() as conn:
+            rows = await conn.execute(select(n.c.at, n.c.data).where(n.c.contact_key == key, n.c.at >= since).order_by(n.c.at))
+            return [dict(r) for r in rows.mappings()]
+
+    async def prune_node_samples(self, before: datetime) -> int:
+        async with self.engine.begin() as conn:
+            return (await conn.execute(delete(s.node_samples).where(s.node_samples.c.at < before))).rowcount or 0
+
     async def mark_all_logged_out(self) -> None:
         async with self.engine.begin() as conn:
             await conn.execute(update(s.remote_logins).where(s.remote_logins.c.logged_in.is_(True))

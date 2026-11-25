@@ -31,6 +31,7 @@ LOGIN_MIN_TIMEOUT = 8.0     # s
 LOGIN_MAX_TIMEOUT = 60.0    # s
 RELOGIN_DELAY = 3.0         # s mezi automatickými přihlášeními po reconnectu
 LOGIN_TYPES = (2, 3)        # repeater, room server
+TELEMETRY_TYPES = (1, 2, 3, 4)  # telemetrie: i klienti a senzory
 REMOTE_MIN_TIMEOUT = 8.0    # s, odpověď vzdáleného uzlu
 REMOTE_MAX_TIMEOUT = 90.0   # s
 
@@ -385,6 +386,10 @@ class DeviceActions:
         logger.info("Přihlášeno k %s%s", name, " (admin)" if values["is_admin"] else "")
         return await self._publish_login(key)
 
+    async def login_quiet(self, key: str, password: str) -> dict:
+        """Přihlášení bez zápisu do historie příkazů a bez uložení hesla (sledování uzlů)."""
+        return await self._login(key, password, remember=False)
+
     async def logout(self, key: str, forget: bool = True, token_id: Optional[int] = None) -> dict:
         async def go():
             async def do(mc):
@@ -441,7 +446,7 @@ class DeviceActions:
         locks = self.__dict__.setdefault("_node_locks", {})
         return locks.setdefault(key, asyncio.Lock())
 
-    async def _remote(self, key: str, what: str, send, wait_types, match_fn) -> tuple[Any, float]:
+    async def _remote(self, key: str, what: str, send, wait_types, match_fn, types=None) -> tuple[Any, float]:
         """Odešle požadavek na uzel (pod zámkem spojení) a počká na odpověď (mimo něj).
 
         send(mc) vrací MSG_SENT; match_fn(event, sent) rozhodne, zda je událost odpovědí.
@@ -450,7 +455,7 @@ class DeviceActions:
         row = await self.repo.get_contact(key)
         if row is None:
             raise ActionError("kontakt v databázi neexistuje")
-        if row.get("type") not in LOGIN_TYPES:
+        if row.get("type") not in (types or LOGIN_TYPES):
             raise ActionError("správa jde jen u repeateru nebo room serveru")
         await self.ensure_on_device(key)
 
@@ -472,7 +477,8 @@ class DeviceActions:
             elapsed = round(asyncio.get_running_loop().time() - started, 2)
         if event is None:
             login = await self.repo.get_login(key) or {}
-            hint = "" if login.get("logged_in") else " – nejste přihlášen, zkuste nejdřív login"
+            hint = "" if login.get("logged_in") or row.get("type") not in LOGIN_TYPES \
+                else " – nejste přihlášen, zkuste nejdřív login"
             raise ActionError(f"{what}: uzel {row.get('name') or key[:12]} neodpověděl do {timeout:.0f} s{hint}")
         return event, elapsed
 
@@ -482,28 +488,30 @@ class DeviceActions:
         tag = tag.hex() if isinstance(tag, (bytes, bytearray)) else tag
         return (event.attributes or {}).get("tag") == tag
 
-    async def node_status(self, key: str, token_id: Optional[int] = None) -> dict:
-        async def go():
-            event, elapsed = await self._remote(
-                key, "dotaz na stav",
-                lambda mc: mc.commands.send_binary_req(key, BinaryReqType.STATUS),
-                (EventType.STATUS_RESPONSE,), self._tag_match,
-            )
-            data = {k: v for k, v in (event.payload or {}).items() if k != "tag"}
-            return {"public_key": key, "elapsed": elapsed, "status": data}
+    async def fetch_status(self, key: str) -> dict:
+        """Dotaz na stav repeateru / room serveru (bez zápisu do historie příkazů – i pro sledování uzlů)."""
+        event, elapsed = await self._remote(
+            key, "dotaz na stav",
+            lambda mc: mc.commands.send_binary_req(key, BinaryReqType.STATUS),
+            (EventType.STATUS_RESPONSE,), self._tag_match,
+        )
+        data = {k: v for k, v in (event.payload or {}).items() if k != "tag"}
+        return {"public_key": key, "elapsed": elapsed, "status": data}
 
-        return await self._run("node_status", {"public_key": key}, token_id, go())
+    async def fetch_telemetry(self, key: str) -> dict:
+        """Telemetrie uzlu (i klienta nebo senzoru, pokud ji uzel povolí)."""
+        event, elapsed = await self._remote(
+            key, "dotaz na telemetrii",
+            lambda mc: mc.commands.send_binary_req(key, BinaryReqType.TELEMETRY),
+            (EventType.TELEMETRY_RESPONSE,), self._tag_match, types=TELEMETRY_TYPES,
+        )
+        return {"public_key": key, "elapsed": elapsed, "telemetry": _lpp_to_json((event.payload or {}).get("lpp"))}
+
+    async def node_status(self, key: str, token_id: Optional[int] = None) -> dict:
+        return await self._run("node_status", {"public_key": key}, token_id, self.fetch_status(key))
 
     async def node_telemetry(self, key: str, token_id: Optional[int] = None) -> dict:
-        async def go():
-            event, elapsed = await self._remote(
-                key, "dotaz na telemetrii",
-                lambda mc: mc.commands.send_binary_req(key, BinaryReqType.TELEMETRY),
-                (EventType.TELEMETRY_RESPONSE,), self._tag_match,
-            )
-            return {"public_key": key, "elapsed": elapsed, "telemetry": _lpp_to_json((event.payload or {}).get("lpp"))}
-
-        return await self._run("node_telemetry", {"public_key": key}, token_id, go())
+        return await self._run("node_telemetry", {"public_key": key}, token_id, self.fetch_telemetry(key))
 
     async def node_neighbours(self, key: str, token_id: Optional[int] = None) -> dict:
         async def go():

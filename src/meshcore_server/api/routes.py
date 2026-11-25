@@ -759,6 +759,83 @@ async def node_telemetry(key: str, ctx: ServerContext = Depends(get_ctx), princi
     return await _action(ctx.actions.node_telemetry(row["public_key"], principal.token_id))
 
 
+# ---------------------------------------------------------- sledování uzlů
+
+
+def _tracker(ctx: ServerContext):
+    if ctx.tracker is None or not ctx.cfg.tracking.enabled:
+        raise HTTPException(status.HTTP_409_CONFLICT, "sledování uzlů je vypnuté (tracking.enabled)")
+    return ctx.tracker
+
+
+@router.get("/tracked")
+async def list_tracked(ctx: ServerContext = Depends(get_ctx), _: Principal = Depends(require("read"))):
+    """Sledované uzly s posledním stavem / telemetrií."""
+    interval = timedelta(minutes=ctx.cfg.tracking.interval_minutes)
+    return {
+        "enabled": ctx.cfg.tracking.enabled,
+        "interval_minutes": ctx.cfg.tracking.interval_minutes,
+        "history_days": ctx.cfg.tracking.history_days,
+        "items": [serialize.tracked(r, interval) for r in await ctx.repo.list_tracked()],
+    }
+
+
+@router.put("/tracked/{key}")
+async def add_tracked(key: str, ctx: ServerContext = Depends(get_ctx), _: Principal = Depends(require("write"))):
+    """Začít sledovat uzel. Repeater / room server: dotaz na stav (po přihlášení – uložené heslo, jinak host),
+    ostatní: telemetrie. První dotaz proběhne hned."""
+    tracker = _tracker(ctx)
+    row = await _contact_or_404(ctx, key)
+    await ctx.repo.add_tracked(row["public_key"])
+    tracker.wake()
+    tracked = await ctx.repo.get_tracked(row["public_key"])
+    item = serialize.tracked(tracked, tracker.interval)
+    await ctx.bus.publish("node.tracked", item)
+    return item
+
+
+@router.delete("/tracked/{key}", status_code=status.HTTP_204_NO_CONTENT)
+async def remove_tracked(key: str, ctx: ServerContext = Depends(get_ctx), _: Principal = Depends(require("write"))):
+    """Přestat sledovat uzel (smaže i jeho historii hodnot)."""
+    row = await _contact_or_404(ctx, key)
+    if not await ctx.repo.remove_tracked(row["public_key"]):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "uzel se nesleduje")
+    await ctx.bus.publish("node.untracked", {"public_key": row["public_key"]})
+
+
+@router.post("/tracked/{key}/poll")
+async def poll_tracked(key: str, ctx: ServerContext = Depends(get_ctx), _: Principal = Depends(require("write"))):
+    """Zeptat se uzlu hned (výsledek přijde událostí node.tracked)."""
+    tracker = _tracker(ctx)
+    row = await _contact_or_404(ctx, key)
+    if await ctx.repo.get_tracked(row["public_key"]) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "uzel se nesleduje")
+    await ctx.repo.update_tracked(row["public_key"], next_poll_at=utcnow())
+    tracker.wake()
+    return serialize.tracked(await ctx.repo.get_tracked(row["public_key"]), tracker.interval)
+
+
+@router.get("/tracked/{key}/history")
+async def tracked_history(
+    key: str,
+    hours: int = Query(24, ge=1, le=24 * 366, description="za kolik hodin zpět"),
+    fields: Optional[str] = Query(None, description="jen vybrané hodnoty, např. bat,battery_percent,noise_floor"),
+    ctx: ServerContext = Depends(get_ctx), _: Principal = Depends(require("read")),
+):
+    """Historie hodnot sledovaného uzlu (bat v mV, battery_percent, noise_floor, last_rssi, telemetrie chN_…)."""
+    row = await _contact_or_404(ctx, key)
+    want = {f.strip() for f in fields.split(",")} if fields else None
+    items = []
+    for r in await ctx.repo.node_samples(row["public_key"], utcnow() - timedelta(hours=hours)):
+        data = r["data"] or {}
+        if want is not None:
+            data = {k: v for k, v in data.items() if k in want}
+            if not data:
+                continue
+        items.append({"at": r["at"], "data": data})
+    return serialize.to_jsonable({"public_key": row["public_key"], "items": items})
+
+
 @router.post("/contacts/{key}/neighbours")
 async def node_neighbours(key: str, ctx: ServerContext = Depends(get_ctx), principal: Principal = Depends(require("write"))):
     """Sousedé, které uzel slyší přímo (s SNR a stářím), se jmény z kontaktů."""

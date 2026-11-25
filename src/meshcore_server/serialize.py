@@ -110,6 +110,37 @@ def contact(row: dict) -> dict:
     })
 
 
+def tracked(row: dict, interval) -> dict:
+    """Sledovaný uzel. online: poslední úspěšný dotaz do 2,5 intervalu; None = zatím bez dotazu."""
+    from datetime import timezone
+
+    from .db.types import utcnow
+
+    last_ok = row.get("last_ok_at")
+    if last_ok is not None and last_ok.tzinfo is None:
+        last_ok = last_ok.replace(tzinfo=timezone.utc)
+    if last_ok is not None:
+        online = utcnow() - last_ok < interval * 2.5
+    else:
+        online = False if row.get("last_poll_at") else None
+    return to_jsonable({
+        "public_key": row["contact_key"],
+        "prefix": row["contact_key"][:12],
+        "name": row.get("name"),
+        "type": row.get("type"),
+        "online": online,
+        "added_at": row.get("added_at"),
+        "last_poll_at": row.get("last_poll_at"),
+        "last_ok_at": row.get("last_ok_at"),
+        "next_poll_at": row.get("next_poll_at"),
+        "failures": row.get("failures") or 0,
+        "last_error": row.get("last_error"),
+        "status": row.get("last_status"),
+        "telemetry": row.get("last_telemetry"),
+        "interval_minutes": int(interval.total_seconds() // 60),
+    })
+
+
 def login(key: str, row: Optional[dict]) -> dict:
     """Stav přihlášení k uzlu. Heslo se nikdy nevrací."""
     row = row or {}

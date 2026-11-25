@@ -9,6 +9,7 @@ if TYPE_CHECKING:
     from ..companion import CompanionManager
     from ..companion.actions import DeviceActions
     from ..companion.queue import CommandQueue
+    from ..companion.tracker import NodeTracker
     from ..config import Config
     from ..db import Database
     from ..db.repo import Repository
@@ -29,4 +30,5 @@ class ServerContext:
     hops: "HopResolver"
     queue: "CommandQueue"
     actions: "DeviceActions"
+    tracker: "NodeTracker | None" = None
     started_at: float = field(default_factory=time.time)

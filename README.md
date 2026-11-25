@@ -9,6 +9,7 @@ Samostatný server pro [MeshCore](https://github.com/meshcore-dev/MeshCore) comp
 - **Odesílání zpráv** přes frontu, která přežije restart i výpadek companionu: kanály a kontakty s regionem (flood scope), DM s potvrzením a opakováním, příspěvky do room serverů; u kanálových zpráv počítá, kolikrát je zaslechl zopakované repeatery.
 - **Správa companionu:** kontakty (oblíbené, automatické uvolňování místa), kanály, jméno, poloha, výkon, parametry rádia, advert, restart.
 - **Room servery a repeatery:** přihlášení (i automatické po reconnectu), stav, telemetrie, sousedé, ACL a CLI příkazy.
+- **Sledování uzlů:** pravidelný dotaz na stav repeaterů a room serverů a na telemetrii klientů, online/offline a historie hodnot pro grafy.
 - **API:** REST a WebSocket se živými událostmi a doplněním zmeškaných, tokeny s oprávněním read/write/admin, nepřečtené zprávy pro jednotlivé uživatele klienta, podrobný stav serveru.
 - **Provoz:** Docker i pip/systemd, migrace schématu, pročišťování historie, zálohy, export a import kontaktů a kanálů.
 
@@ -229,6 +230,20 @@ Po přihlášení k uzlu (`POST /api/v1/contacts/{key}/login`, pro ACL a CLI jak
 
 Každá odpověď obsahuje i `elapsed` – jak dlouho trvala cesta tam a zpět. Požadavek čeká na odpověď podle vzdálenosti uzlu (nejméně 8 s, nejvýš 90 s); server mezitím normálně odesílá a přijímá zprávy. Na jeden uzel jde vždy jen jeden požadavek najednou. Když uzel neodpoví, API vrátí `409` s důvodem (a připomene přihlášení). Odpovědi CLI se neukládají mezi zprávy.
 
+### Sledování uzlů
+
+| Metoda | Cesta | Popis |
+|---|---|---|
+| GET | `/api/v1/tracked` | Sledované uzly s posledním stavem / telemetrií a příznakem `online` (`read`) |
+| PUT | `/api/v1/tracked/{key}` | Začít sledovat uzel, první dotaz proběhne hned (`write`) |
+| DELETE | `/api/v1/tracked/{key}` | Přestat sledovat (smaže i historii hodnot) (`write`) |
+| POST | `/api/v1/tracked/{key}/poll` | Zeptat se hned (`write`) |
+| GET | `/api/v1/tracked/{key}/history?hours=24&fields=bat,battery_percent` | Historie hodnot (`read`) |
+
+Server se sledovaných uzlů ptá postupně, jednou za `tracking.interval_minutes` (výchozí 30 min, nejméně 15 – každý dotaz je paket v síti). Repeater a room server: přihlásí se (uložené heslo z `/login`, jinak jako host) a zeptá se na stav – baterie, uptime, šum, RSSI/SNR, airtime, počty paketů. Klient a senzor: telemetrie (Cayenne LPP), pokud ji uzel povolí – u cizích companionů obvykle jen když je companion v jejich ACL. Po neúspěchu se interval prodlužuje až na `tracking.max_backoff_minutes` (6 h). `online` = úspěšná odpověď v posledních 2,5 intervalu.
+
+Historie (`node_samples`) drží ploché hodnoty: `bat` (mV), `battery_percent`, pole stavu (`noise_floor`, `last_rssi`, `uptime`, `nb_sent`…) a telemetrii jako `ch1_voltage`, `ch2_temperature`. Maže se po `tracking.history_days` (30 dní). Po každém dotazu přijde událost `node.tracked`, po odebrání `node.untracked`.
+
 ### Nastavení nodu
 
 ```json
@@ -269,7 +284,7 @@ Připojení `ws://<server>:8080/api/v1/ws?token=<token>` (z prohlížeče místo
 {"seq": 123, "type": "message.received", "ts": "2026-11-11T09:03:19Z", "data": {…}}
 ```
 
-Typy událostí: `message.received` (příchozí), `message.created` (odchozí zařazená do fronty), `message.status` (změna stavu odchozí), `command.finished`, `contact.updated`, `contact.deleted`, `contacts.synced`, `contact.login`, `read.updated`, `channels.updated`, `advert.received`, `device.updated`, `device.connection`, `device.battery` (napětí a odhad nabití companionu – při změně o 20 mV, jinak nejvýš jednou za 10 minut).
+Typy událostí: `message.received` (příchozí), `message.created` (odchozí zařazená do fronty), `message.status` (změna stavu odchozí), `command.finished`, `contact.updated`, `contact.deleted`, `contacts.synced`, `contact.login`, `read.updated`, `channels.updated`, `advert.received`, `device.updated`, `device.connection`, `device.battery` (napětí a odhad nabití companionu – při změně o 20 mV, jinak nejvýš jednou za 10 minut), `node.tracked`, `node.untracked` (sledované uzly).
 
 Po výpadku spojení se klient připojí s `&since=<poslední seq>` a server mu nejdřív pošle zmeškané události. Pokud už je nemá (drží je `database.events_retention_days`, výchozí 7 dní), pošle `{"type": "resync.required"}` a klient si data načte znovu přes REST. Neplatný token ukončí spojení kódem 4401. Klient může posílat `{"type": "ping"}`, server odpoví `{"type": "pong"}`.
 

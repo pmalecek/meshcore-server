@@ -16,6 +16,7 @@ from .companion.event_log import EventLogger
 from .companion.ingest import Ingest
 from .companion.actions import DeviceActions
 from .companion.queue import CommandQueue
+from .companion.tracker import NodeTracker
 from .config import Config
 from .db import Database
 from .db.repo import Repository
@@ -89,6 +90,7 @@ class Application:
         actions = DeviceActions(repo, self.companion, bus, hops)
         self.companion.add_state_listener(actions.on_state)
         queue = CommandQueue(repo, self.companion, self.cfg.companion, bus, hops, actions)
+        tracker = NodeTracker(repo, self.companion, actions, bus, self.cfg.tracking)
 
         if not await repo.list_tokens():
             logger.warning(
@@ -96,7 +98,7 @@ class Application:
             )
 
         ctx = ServerContext(cfg=self.cfg, db=self.db, repo=repo, bus=bus, tokens=tokens, companion=self.companion,
-                            hops=hops, queue=queue, actions=actions)
+                            hops=hops, queue=queue, actions=actions, tracker=tracker)
         api = build_server(ctx)
         logger.info("API poslouchá na http://%s:%d", self.cfg.server.host, self.cfg.server.port)
 
@@ -105,6 +107,7 @@ class Application:
             asyncio.create_task(self._serve_api(api), name="api"),
             asyncio.create_task(self._maintenance(repo), name="maintenance"),
             asyncio.create_task(queue.run(self.stop), name="queue"),
+            asyncio.create_task(tracker.run(self.stop), name="tracker"),
         }
         await self.stop.wait()
         api.should_exit = True
@@ -132,6 +135,9 @@ class Application:
                 removed = await repo.prune_events(utcnow() - keep)
                 if removed:
                     logger.info("Úklid: smazáno %d starých událostí", removed)
+                samples = await repo.prune_node_samples(utcnow() - timedelta(days=self.cfg.tracking.history_days))
+                if samples:
+                    logger.info("Úklid: smazáno %d starých hodnot sledovaných uzlů", samples)
                 purged = await repo.purge(utcnow(), r.messages_days, r.adverts_days, r.commands_days)
                 if any(purged.values()):
                     logger.info("Pročištění: %s", ", ".join(f"{k} {v}" for k, v in purged.items() if v))

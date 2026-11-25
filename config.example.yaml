@@ -58,6 +58,12 @@ database:
     adverts_days: 0
     commands_days: 0
 
+tracking:                 # sledování uzlů (repeatery, room servery, klienti)
+  enabled: true
+  interval_minutes: 30    # jak často se ptát (nejméně 15 – každý dotaz je paket v síti)
+  max_backoff_minutes: 360  # nejdelší odstup po opakovaných neúspěších
+  history_days: 30        # jak dlouho držet hodnoty pro grafy
+
 logging:
   level: INFO             # DEBUG | INFO | WARNING | ERROR
   log_events: true        # vypisovat události z companionu

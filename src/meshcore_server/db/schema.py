@@ -197,5 +197,33 @@ remote_logins = Table(
     **MYSQL_OPTS,
 )
 
+# Sledované uzly (repeatery, room servery, klienti): server se jich pravidelně ptá na stav / telemetrii.
+tracked_nodes = Table(
+    "tracked_nodes", metadata,
+    Column("contact_key", String(64), primary_key=True),
+    Column("added_at", UTCDateTime, nullable=False),
+    Column("next_poll_at", UTCDateTime, nullable=False),
+    Column("last_poll_at", UTCDateTime),
+    Column("last_ok_at", UTCDateTime),
+    Column("failures", Integer, nullable=False, default=0),   # neúspěšné dotazy po sobě
+    Column("last_error", Text),
+    Column("last_status", JSONText),       # poslední odpověď na dotaz na stav (repeater, room server)
+    Column("last_telemetry", JSONText),    # poslední telemetrie (Cayenne LPP jako JSON)
+    Column("updated_at", UTCDateTime, nullable=False),
+    **MYSQL_OPTS,
+)
+
+# Historie hodnot sledovaných uzlů pro grafy (data = ploché {klíč: číslo})
+node_samples = Table(
+    "node_samples", metadata,
+    Column("id", BigIntPK, primary_key=True, autoincrement=True),
+    Column("contact_key", String(64), nullable=False),
+    Column("at", UTCDateTime, nullable=False),
+    Column("data", JSONText, nullable=False),
+    Index("ix_node_samples_key_at", "contact_key", "at"),
+    Index("ix_node_samples_at", "at"),
+    **MYSQL_OPTS,
+)
+
 # Tabulky, které ukazuje `db info` a později /server.
 MAIN_TABLES = ("messages", "contacts", "channels", "adverts", "commands", "events")
